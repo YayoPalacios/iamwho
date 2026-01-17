@@ -1,4 +1,3 @@
-# src/iamwho/checks/egress.py
 """
 EGRESS Check - Analyze what actions a principal can perform.
 
@@ -9,10 +8,11 @@ Security Focus:
 - Highlight lateral movement capabilities
 """
 
-import boto3
-import json
 import re
 from typing import Any
+
+import boto3
+from botocore.exceptions import ClientError
 
 # === DANGEROUS PERMISSION PATTERNS ===
 
@@ -78,14 +78,13 @@ MEDIUM_PATTERNS = [
 ]
 
 
-def run(principal_arn: str) -> dict[str, Any]:
+def analyze_egress(principal_arn: str) -> dict[str, Any]:
     """
     Analyze EGRESS permissions for an IAM principal.
 
     Returns:
         dict with status, message, findings, and summary
     """
-    # Parse ARN to determine principal type
     arn_parts = principal_arn.split(":")
     if len(arn_parts) < 6:
         return {
@@ -95,14 +94,14 @@ def run(principal_arn: str) -> dict[str, Any]:
             "summary": None,
         }
 
-    resource_part = arn_parts[5]  # e.g., "role/MyRole" or "user/MyUser"
+    resource_part = arn_parts[5]
 
     if resource_part.startswith("role/"):
         principal_type = "role"
-        principal_name = resource_part[5:]  # Remove "role/" prefix
+        principal_name = resource_part.split("/")[-1]
     elif resource_part.startswith("user/"):
         principal_type = "user"
-        principal_name = resource_part[5:]  # Remove "user/" prefix
+        principal_name = resource_part.split("/")[-1]
     else:
         return {
             "status": "not_applicable",
@@ -117,15 +116,13 @@ def run(principal_arn: str) -> dict[str, Any]:
         all_statements = []
 
         if principal_type == "role":
-            # Get attached managed policies
             attached = iam.list_attached_role_policies(RoleName=principal_name)
             for policy in attached.get("AttachedPolicies", []):
-                policy_statements = get_policy_statements(iam, policy["PolicyArn"])
+                policy_statements = _get_policy_statements(iam, policy["PolicyArn"])
                 for stmt in policy_statements:
                     stmt["_source"] = f"Managed: {policy['PolicyName']}"
                     all_statements.append(stmt)
 
-            # Get inline policies
             inline_names = iam.list_role_policies(RoleName=principal_name)
             for policy_name in inline_names.get("PolicyNames", []):
                 policy_doc = iam.get_role_policy(RoleName=principal_name, PolicyName=policy_name)
@@ -134,15 +131,13 @@ def run(principal_arn: str) -> dict[str, Any]:
                     all_statements.append(stmt)
 
         else:  # user
-            # Get attached managed policies
             attached = iam.list_attached_user_policies(UserName=principal_name)
             for policy in attached.get("AttachedPolicies", []):
-                policy_statements = get_policy_statements(iam, policy["PolicyArn"])
+                policy_statements = _get_policy_statements(iam, policy["PolicyArn"])
                 for stmt in policy_statements:
                     stmt["_source"] = f"Managed: {policy['PolicyName']}"
                     all_statements.append(stmt)
 
-            # Get inline policies
             inline_names = iam.list_user_policies(UserName=principal_name)
             for policy_name in inline_names.get("PolicyNames", []):
                 policy_doc = iam.get_user_policy(UserName=principal_name, PolicyName=policy_name)
@@ -150,45 +145,57 @@ def run(principal_arn: str) -> dict[str, Any]:
                     stmt["_source"] = f"Inline: {policy_name}"
                     all_statements.append(stmt)
 
-        # Analyze each statement
         for stmt in all_statements:
             if stmt.get("Effect") != "Allow":
-                continue  # Only analyze Allow statements for egress risk
+                continue
 
-            stmt_findings = analyze_statement(stmt)
+            stmt_findings = _analyze_statement(stmt)
             findings.extend(stmt_findings)
 
-        # Sort by risk level
         risk_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
         findings.sort(key=lambda x: risk_order.get(x["risk"], 99))
 
-        # Generate summary
-        summary = generate_summary(findings)
+        summary = _generate_summary(findings)
 
         return {
             "status": "success",
-            "message": f"EGRESS analysis for {principal_name}",
+            "message": f"Analyzed {len(all_statements)} policy statements",
             "findings": findings,
             "summary": summary,
         }
 
-    except iam.exceptions.NoSuchEntityException:
+    except ClientError as e:
+        code = e.response["Error"]["Code"]
+        if code == "NoSuchEntity":
+            return {
+                "status": "error",
+                "message": f"Principal not found: {principal_name}",
+                "findings": [],
+                "summary": None,
+            }
+        if code == "AccessDenied":
+            return {
+                "status": "error",
+                "message": f"Access denied fetching policies for: {principal_name}",
+                "findings": [],
+                "summary": None,
+            }
         return {
             "status": "error",
-            "message": f"Principal not found: {principal_name}",
+            "message": f"AWS error: {code}",
             "findings": [],
             "summary": None,
         }
     except Exception as e:
         return {
             "status": "error",
-            "message": f"Error analyzing {principal_name}: {str(e)}",
+            "message": f"Error analyzing {principal_name}: {e}",
             "findings": [],
             "summary": None,
         }
 
 
-def get_policy_statements(iam, policy_arn: str) -> list[dict]:
+def _get_policy_statements(iam, policy_arn: str) -> list[dict]:
     """Fetch statements from a managed policy."""
     policy = iam.get_policy(PolicyArn=policy_arn)
     version_id = policy["Policy"]["DefaultVersionId"]
@@ -196,12 +203,8 @@ def get_policy_statements(iam, policy_arn: str) -> list[dict]:
     return version["PolicyVersion"]["Document"].get("Statement", [])
 
 
-def analyze_statement(stmt: dict) -> list[dict]:
-    """
-    Analyze a single policy statement for security risks.
-
-    Returns a list of findings (one per dangerous action found).
-    """
+def _analyze_statement(stmt: dict) -> list[dict]:
+    """Analyze a single policy statement for security risks."""
     findings = []
 
     actions = stmt.get("Action", [])
@@ -215,29 +218,24 @@ def analyze_statement(stmt: dict) -> list[dict]:
     conditions = stmt.get("Condition", {})
     source = stmt.get("_source", "Unknown")
 
-    # Check if resources are wildcarded
     is_wildcard_resource = any(r == "*" or r.endswith(":*") for r in resources)
 
     for action in actions:
-        finding = classify_action(action, resources, conditions, source, is_wildcard_resource)
+        finding = _classify_action(action, resources, conditions, source, is_wildcard_resource)
         if finding:
             findings.append(finding)
 
     return findings
 
 
-def classify_action(
+def _classify_action(
     action: str,
     resources: list[str],
     conditions: dict,
     source: str,
-    is_wildcard_resource: bool
+    is_wildcard_resource: bool,
 ) -> dict | None:
-    """
-    Classify a single action's risk level.
-
-    Returns a finding dict or None if the action is benign.
-    """
+    """Classify a single action's risk level."""
     action_lower = action.lower()
 
     # Check CRITICAL patterns
@@ -245,12 +243,10 @@ def classify_action(
         if re.match(pattern, action, re.IGNORECASE):
             risk = "CRITICAL"
 
-            # Downgrade sts:AssumeRole if scoped to specific resources
             if action_lower == "sts:assumerole" and not is_wildcard_resource:
                 risk = "MEDIUM"
                 description = "Can assume specific roles (scoped)"
 
-            # Downgrade iam:PassRole if scoped
             if action_lower == "iam:passrole" and not is_wildcard_resource:
                 risk = "HIGH"
                 description = "Can pass specific roles to services"
@@ -271,7 +267,6 @@ def classify_action(
         if re.match(pattern, action, re.IGNORECASE):
             risk = "HIGH"
 
-            # Downgrade if scoped to specific resources
             if not is_wildcard_resource:
                 risk = "MEDIUM"
                 description += " (scoped to specific resources)"
@@ -279,7 +274,7 @@ def classify_action(
             return {
                 "action": action,
                 "risk": risk,
-                "category": categorize_action(action),
+                "category": _categorize_action(action),
                 "resources": resources,
                 "resource_scope": "ALL" if is_wildcard_resource else "SCOPED",
                 "conditions": conditions if conditions else None,
@@ -293,7 +288,7 @@ def classify_action(
             return {
                 "action": action,
                 "risk": "MEDIUM",
-                "category": categorize_action(action),
+                "category": _categorize_action(action),
                 "resources": resources,
                 "resource_scope": "ALL" if is_wildcard_resource else "SCOPED",
                 "conditions": conditions if conditions else None,
@@ -301,11 +296,10 @@ def classify_action(
                 "explanation": description,
             }
 
-    # Not a flagged action
     return None
 
 
-def categorize_action(action: str) -> str:
+def _categorize_action(action: str) -> str:
     """Categorize an action by its security domain."""
     action_lower = action.lower()
 
@@ -327,7 +321,7 @@ def categorize_action(action: str) -> str:
         return "Other"
 
 
-def generate_summary(findings: list[dict]) -> dict:
+def _generate_summary(findings: list[dict]) -> dict:
     """Generate a risk summary from findings."""
     if not findings:
         return {
@@ -338,15 +332,14 @@ def generate_summary(findings: list[dict]) -> dict:
             "verdict_explanation": "No dangerous permissions detected",
         }
 
-    risk_counts = {}
-    categories = set()
+    risk_counts: dict[str, int] = {}
+    categories: set[str] = set()
 
     for f in findings:
         risk = f["risk"]
         risk_counts[risk] = risk_counts.get(risk, 0) + 1
         categories.add(f["category"])
 
-    # Determine overall verdict
     if risk_counts.get("CRITICAL", 0) > 0:
         verdict = "CRITICAL"
         verdict_explanation = "Principal has privilege escalation or admin-level access"
@@ -373,3 +366,42 @@ def generate_summary(findings: list[dict]) -> dict:
         "verdict": verdict,
         "verdict_explanation": verdict_explanation,
     }
+
+
+def format_egress(result: dict[str, Any]) -> str:
+    """Format egress results for CLI output."""
+    lines: list[str] = []
+
+    lines.append("EGRESS Analysis")
+    lines.append("=" * 60)
+
+    if result["status"] == "error":
+        lines.append(f"ERROR: {result['message']}")
+        return "\n".join(lines)
+
+    if result["status"] == "not_applicable":
+        lines.append(result["message"])
+        return "\n".join(lines)
+
+    summary = result["summary"]
+    lines.append(f"Verdict: {summary['verdict']} | Findings: {summary['total_findings']}")
+    lines.append(f"  {summary['verdict_explanation']}")
+
+    if summary["categories"]:
+        lines.append(f"  Categories: {', '.join(summary['categories'])}")
+
+    lines.append("")
+
+    for finding in result["findings"]:
+        scope_label = "[ALL]" if finding["resource_scope"] == "ALL" else "[SCOPED]"
+        lines.append(f"  [{finding['risk']}] {scope_label} {finding['action']}")
+        lines.append(f"        {finding['explanation']}")
+        lines.append(f"        Source: {finding['source']}")
+        if finding["resource_scope"] == "SCOPED":
+            res = finding["resources"][0] if finding["resources"] else "N/A"
+            if len(res) > 60:
+                res = res[:57] + "..."
+            lines.append(f"        Resource: {res}")
+        lines.append("")
+
+    return "\n".join(lines)

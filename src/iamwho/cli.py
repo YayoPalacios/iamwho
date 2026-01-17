@@ -71,7 +71,6 @@ def analyze(
 
 def is_valid_arn(arn: str) -> bool:
     """Basic ARN format validation."""
-    # Support roles and users
     return arn.startswith("arn:aws:iam::")
 
 
@@ -97,21 +96,17 @@ def perform_ingress_check(principal_arn: str, output_json: bool = False) -> dict
     if output_json:
         return result.to_dict()
 
-    # Print header
     console.print(f"\n[bold blue]INGRESS Analysis: {result.role_arn}[/bold blue]")
     console.print("=" * 60)
 
-    # Handle errors
     if result.error:
         console.print(f"[red]Error:[/red] {result.error}")
         return None
 
-    # Handle no findings
     if not result.findings:
         console.print("[dim](No trust relationships found)[/dim]\n")
         return None
 
-    # Overall risk
     overall_style = get_risk_style(result.highest_risk)
     console.print(
         f"Overall Risk: [{overall_style}]{result.highest_risk.value}[/{overall_style}] "
@@ -119,19 +114,16 @@ def perform_ingress_check(principal_arn: str, output_json: bool = False) -> dict
     )
     console.print()
 
-    # Sort findings by risk (highest first)
     sorted_findings = sorted(result.findings, key=lambda f: f.risk, reverse=True)
 
     for finding in sorted_findings:
         risk_style = get_risk_style(finding.risk)
 
-        # Main finding line
         console.print(
             f"  [{risk_style}][{finding.risk.value}][/{risk_style}] "
             f"{finding.principal}"
         )
 
-        # Details line
         details = (
             f"        Type: [cyan]{finding.principal_type.value}[/cyan] | "
             f"Assume: [cyan]{finding.assume_type.value}[/cyan]"
@@ -140,11 +132,9 @@ def perform_ingress_check(principal_arn: str, output_json: bool = False) -> dict
             details += f" | Sid: {finding.statement_id}"
         console.print(details)
 
-        # Reasons
         for reason in finding.reasons:
             console.print(f"        [dim]{reason}[/dim]")
 
-        # Conditions summary
         protections = _get_protection_summary(finding.conditions)
         if protections:
             console.print(f"        Conditions: [green]{', '.join(protections)}[/green]")
@@ -177,15 +167,73 @@ def _get_protection_summary(conditions) -> list[str]:
 
 
 def perform_egress_check(principal_arn: str, output_json: bool = False) -> dict | None:
-    """Run the EGRESS check (stub)."""
+    """Run the EGRESS check and display results."""
+    from iamwho.checks.egress import analyze_egress
+
+    result = analyze_egress(principal_arn)
+
     if output_json:
-        return {"status": "not_implemented", "message": "EGRESS check not yet implemented"}
+        return result
 
     console.print("\n[bold blue]EGRESS Analysis[/bold blue]")
     console.print("=" * 60)
-    console.print("[yellow]Not yet implemented[/yellow]")
-    console.print("[dim]Will analyze: attached policies, inline policies, permission boundaries[/dim]")
+
+    if result["status"] == "error":
+        console.print(f"[red]Error:[/red] {result['message']}")
+        return None
+
+    if result["status"] == "not_applicable":
+        console.print(f"[dim]{result['message']}[/dim]\n")
+        return None
+
+    summary = result["summary"]
+
+    if not summary or summary["total_findings"] == 0:
+        console.print("[dim](No dangerous permissions detected)[/dim]\n")
+        return None
+
+    verdict_style = get_risk_style(summary["verdict"])
+    console.print(
+        f"Verdict: [{verdict_style}]{summary['verdict']}[/{verdict_style}] "
+        f"| Findings: {summary['total_findings']}"
+    )
+    console.print(f"  [dim]{summary['verdict_explanation']}[/dim]")
+
+    if summary["categories"]:
+        console.print(f"  Categories: [cyan]{', '.join(summary['categories'])}[/cyan]")
+
+    # Risk breakdown
+    if summary["risk_counts"]:
+        counts = [f"{k}: {v}" for k, v in sorted(summary["risk_counts"].items())]
+        console.print(f"  Breakdown: {', '.join(counts)}")
+
     console.print()
+
+    for finding in result["findings"]:
+        risk_style = get_risk_style(finding["risk"])
+        scope_label = "[ALL]" if finding["resource_scope"] == "ALL" else "[SCOPED]"
+        scope_style = "red" if finding["resource_scope"] == "ALL" else "green"
+
+        console.print(
+            f"  [{risk_style}][{finding['risk']}][/{risk_style}] "
+            f"[{scope_style}]{scope_label}[/{scope_style}] "
+            f"[white]{finding['action']}[/white]"
+        )
+        console.print(f"        [dim]{finding['explanation']}[/dim]")
+        console.print(f"        Source: [cyan]{finding['source']}[/cyan]")
+
+        if finding["resource_scope"] == "SCOPED" and finding["resources"]:
+            res = finding["resources"][0]
+            if len(res) > 60:
+                res = res[:57] + "..."
+            console.print(f"        Resource: [dim]{res}[/dim]")
+
+        if finding["conditions"]:
+            cond_keys = list(finding["conditions"].keys())
+            console.print(f"        Conditions: [green]{', '.join(cond_keys)}[/green]")
+
+        console.print()
+
     return None
 
 
