@@ -405,3 +405,6 @@ def format_egress(result: dict[str, Any]) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+# Alias for module consistency
+run = analyze_egress

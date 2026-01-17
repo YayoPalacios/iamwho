@@ -5,7 +5,11 @@ PRIVILEGE MUTATION check - identifies privilege escalation paths.
 
 from typing import Any
 
+from rich.console import Console
+
 from iamwho.checks import egress
+
+console = Console()
 
 
 ESCALATION_PATHS: dict[str, dict[str, Any]] = {
@@ -132,6 +136,34 @@ ESCALATION_PATHS: dict[str, dict[str, Any]] = {
         "escalation": "Create endpoint with passed privileged role",
         "requires_combination": True,
     },
+    "glue:UpdateDevEndpoint": {
+        "risk": "MEDIUM",
+        "category": "SERVICE_CREATE",
+        "description": "Can update Glue dev endpoints",
+        "escalation": "Update endpoint SSH key for access",
+        "requires_combination": True,
+    },
+    "cloudformation:CreateStack": {
+        "risk": "MEDIUM",
+        "category": "SERVICE_CREATE",
+        "description": "Can create CloudFormation stacks",
+        "escalation": "Create stack with passed privileged role",
+        "requires_combination": True,
+    },
+    "datapipeline:CreatePipeline": {
+        "risk": "MEDIUM",
+        "category": "SERVICE_CREATE",
+        "description": "Can create Data Pipeline",
+        "escalation": "Create pipeline with passed privileged role",
+        "requires_combination": True,
+    },
+    "sagemaker:CreateNotebookInstance": {
+        "risk": "MEDIUM",
+        "category": "SERVICE_CREATE",
+        "description": "Can create SageMaker notebook",
+        "escalation": "Create notebook with passed privileged role",
+        "requires_combination": True,
+    },
 }
 
 ESCALATION_COMBOS: list[dict[str, Any]] = [
@@ -158,6 +190,30 @@ ESCALATION_COMBOS: list[dict[str, Any]] = [
         "risk": "HIGH",
         "description": "Can create Glue endpoint with arbitrary role",
         "escalation": "Create Glue endpoint with admin role",
+    },
+    {
+        "actions": ["iam:PassRole", "cloudformation:CreateStack"],
+        "risk": "HIGH",
+        "description": "Can create CloudFormation stack with arbitrary role",
+        "escalation": "Create stack that provisions admin resources",
+    },
+    {
+        "actions": ["iam:PassRole", "datapipeline:CreatePipeline"],
+        "risk": "HIGH",
+        "description": "Can create Data Pipeline with arbitrary role",
+        "escalation": "Create pipeline that runs with admin role",
+    },
+    {
+        "actions": ["iam:PassRole", "sagemaker:CreateNotebookInstance"],
+        "risk": "HIGH",
+        "description": "Can create SageMaker notebook with arbitrary role",
+        "escalation": "Create notebook with admin role for credential access",
+    },
+    {
+        "actions": ["iam:CreateAccessKey", "sts:AssumeRole"],
+        "risk": "HIGH",
+        "description": "Can create keys and assume roles",
+        "escalation": "Create persistent access then pivot to privileged roles",
     },
 ]
 
@@ -222,7 +278,6 @@ def check_mutation(permissions: list[dict[str, Any]]) -> dict[str, Any]:
     action_details: dict[str, dict[str, Any]] = {}
 
     # Collect all actions with their details
-    # Note: egress findings are already allowed permissions (no effect field)
     for perm in permissions:
         action = perm.get("action", "")
         found_actions.add(action)
@@ -317,7 +372,9 @@ def _expand_wildcards(
                     action_details[esc_action] = perm
 
 
-def _determine_verdict(all_risks: list[str], findings: list[dict[str, Any]]) -> tuple[str, str]:
+def _determine_verdict(
+        all_risks: list[str], findings: list[dict[str, Any]]
+) -> tuple[str, str]:
     """Determine overall risk level and verdict message."""
     if "CRITICAL" in all_risks:
         return "CRITICAL", "CRITICAL: Direct privilege escalation possible"
@@ -328,3 +385,188 @@ def _determine_verdict(all_risks: list[str], findings: list[dict[str, Any]]) -> 
     if findings:
         return "LOW", "LOW: Limited escalation potential"
     return "LOW", "LOW: No obvious privilege escalation paths"
+
+
+# =============================================================================
+# RENDERING
+# =============================================================================
+
+RISK_COLORS: dict[str, str] = {
+    "CRITICAL": "red bold",
+    "HIGH": "red",
+    "MEDIUM": "yellow",
+    "LOW": "green",
+}
+
+RISK_ORDER: dict[str, int] = {
+    "CRITICAL": 0,
+    "HIGH": 1,
+    "MEDIUM": 2,
+    "LOW": 3,
+}
+
+
+def render(result: dict[str, Any], verbose: bool = False) -> None:
+    """
+    Render MUTATION results with tree-style ASCII diagram.
+
+    Args:
+        result: Dictionary from run() or check_mutation()
+        verbose: Show detailed explanations and remediations
+    """
+    console.print()
+    console.print(
+        f"[bold][ MUTATION ][/bold] {result.get('message', 'Privilege escalation paths')}"
+    )
+    console.print("-" * 60)
+
+    # Handle errors or not applicable
+    if result.get("status") == "error":
+        console.print()
+        console.print(f"  [red]Error: {result.get('error', 'Unknown error')}[/red]")
+        console.print()
+        return
+
+    if result.get("status") == "not_applicable":
+        console.print()
+        console.print(f"  [dim]{result.get('message', 'Not applicable')}[/dim]")
+        console.print()
+        return
+
+    direct = result.get("direct_escalations", [])
+    combos = result.get("combination_escalations", [])
+    potential = result.get("potential_escalations", [])
+
+    # No escalation paths found
+    if not direct and not combos:
+        console.print()
+        console.print("  [green]No escalation paths detected[/green]")
+
+        if verbose and potential:
+            console.print()
+            console.print("  [dim]Potential (requires additional access):[/dim]")
+            for p in potential[:5]:
+                console.print(
+                    f"  [dim]  - {p['action']} → {p['escalation_path']}[/dim]"
+                )
+
+        console.print()
+        console.print("-" * 60)
+        _render_summary(result)
+        return
+
+    console.print()
+
+    # Build display paths from direct escalations and combos
+    all_paths: list[dict[str, Any]] = []
+
+    for esc in direct:
+        all_paths.append({
+            "display": esc["action"],
+            "target": _truncate(esc["escalation_path"], 30),
+            "risk": esc["risk"],
+            "description": esc["description"],
+            "category": esc.get("category", ""),
+            "source": esc.get("source_policy", ""),
+            "resource_scope": esc.get("resource_scope", ""),
+        })
+
+    for combo in combos:
+        all_paths.append({
+            "display": " + ".join(combo["actions"]),
+            "target": _truncate(combo["escalation_path"], 30),
+            "risk": combo["risk"],
+            "description": combo["description"],
+            "category": "COMBINATION",
+            "source": "",
+            "resource_scope": "",
+        })
+
+    # Sort by risk (CRITICAL first)
+    all_paths.sort(key=lambda p: RISK_ORDER.get(p["risk"], 99))
+
+    # Render tree
+    for i, path in enumerate(all_paths):
+        is_last = i == len(all_paths) - 1
+        prefix = "└──" if is_last else "├──"
+        continuation = "   " if is_last else "│  "
+
+        # Build display text and calculate dots
+        display_text = f"{path['display']} → {path['target']}"
+        total_width = 50
+        dots_needed = max(3, total_width - len(display_text))
+        dots = "." * dots_needed
+
+        # Get risk color
+        style = RISK_COLORS.get(path["risk"], "white")
+
+        # Main line
+        console.print(
+            f"  {prefix} {display_text} [dim]{dots}[/dim] [{style}]{path['risk']}[/{style}]"
+        )
+
+        # Verbose details
+        if verbose:
+            console.print(f"  {continuation}     [dim]{path['description']}[/dim]")
+            if path.get("category"):
+                console.print(
+                    f"  {continuation}     [dim]Category: {path['category']}[/dim]"
+                )
+            if path.get("resource_scope") and path["resource_scope"] != "ALL":
+                console.print(
+                    f"  {continuation}     [cyan]Scope:[/cyan] [dim]{path['resource_scope']}[/dim]"
+                )
+
+        # Spacing between entries
+        if not is_last:
+            console.print("  │")
+
+    # Show potential escalations in verbose mode
+    if verbose and potential:
+        console.print()
+        console.print("  [dim]Potential (requires additional access):[/dim]")
+        for p in potential[:5]:
+            console.print(
+                f"  [dim]  - {p['action']} → {p['escalation_path']}[/dim]"
+            )
+        if len(potential) > 5:
+            console.print(f"  [dim]  ... and {len(potential) - 5} more[/dim]")
+
+    # Footer
+    console.print()
+    console.print("-" * 60)
+    _render_summary(result)
+
+
+def _render_summary(result: dict[str, Any]) -> None:
+    """Render the summary footer."""
+    summary = result.get("summary", {})
+    overall = result.get("overall_risk", "LOW")
+    direct = result.get("direct_escalations", [])
+    combos = result.get("combination_escalations", [])
+
+    style = RISK_COLORS.get(overall, "white")
+    total_paths = len(direct) + len(combos)
+
+    console.print(
+        f"  Paths: {total_paths} | "
+        f"Highest: [{style}]{overall}[/{style}] | "
+        f"[red]C:{summary.get('critical_count', 0)}[/red] "
+        f"[red]H:{summary.get('high_count', 0)}[/red] "
+        f"[yellow]M:{summary.get('medium_count', 0)}[/yellow]"
+    )
+    console.print()
+
+    # Verdict
+    verdict = result.get("verdict", "")
+    if verdict:
+        verdict_style = RISK_COLORS.get(overall, "white")
+        console.print(f"  [{verdict_style}]{verdict}[/{verdict_style}]")
+        console.print()
+
+
+def _truncate(text: str, max_len: int) -> str:
+    """Truncate text with ellipsis if too long."""
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 2] + ".."
