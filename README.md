@@ -24,7 +24,7 @@ It is designed for **security analysis**, not IAM usage tutorials.
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/iamwho.git
+git clone https://github.com/YayoPalacios/iamwho.git
 cd iamwho
 
 # Install in editable mode
