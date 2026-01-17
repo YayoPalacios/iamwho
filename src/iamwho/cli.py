@@ -1,10 +1,11 @@
-# src/iamwho/cli.py
-"""
-iamwho CLI - IAM principal security analyzer
-"""
+"""iamwho CLI - IAM principal security analyzer."""
+
+import json
 
 import typer
 from rich.console import Console
+
+from iamwho.models import RiskLevel
 
 app = typer.Typer(help="Analyze AWS IAM principals for security insights.")
 console = Console()
@@ -12,10 +13,10 @@ console = Console()
 
 @app.callback(invoke_without_command=True)
 def main(
-        ctx: typer.Context,
-        version: bool = typer.Option(
-            False, "--version", "-v", help="Show version and exit."
-        ),
+    ctx: typer.Context,
+    version: bool = typer.Option(
+        False, "--version", "-v", help="Show version and exit."
+    ),
 ):
     """iamwho - Understand your IAM principals."""
     if version:
@@ -28,41 +29,55 @@ def main(
 
 @app.command()
 def analyze(
-        principal_arn: str = typer.Argument(
-            ..., help="The ARN of the IAM principal to analyze."
-        ),
-        check: str = typer.Option(
-            "all", "--check", "-c", help="Type of check: ingress, egress, mutation, or all"
-        ),
+    principal_arn: str = typer.Argument(
+        ..., help="The ARN of the IAM principal to analyze."
+    ),
+    check: str = typer.Option(
+        "all", "--check", "-c", help="Type of check: ingress, egress, mutation, or all"
+    ),
+    output_json: bool = typer.Option(
+        False, "--json", "-j", help="Output results as JSON"
+    ),
 ):
     """Analyze the specified IAM principal."""
-
     if not is_valid_arn(principal_arn):
         console.print("[red]Invalid ARN format.[/red]")
         raise typer.Exit(code=1)
 
-    if check == "all":
-        perform_ingress_check(principal_arn)
-        perform_egress_check(principal_arn)
-        perform_privilege_mutation_check(principal_arn)
-    elif check == "ingress":
-        perform_ingress_check(principal_arn)
-    elif check == "egress":
-        perform_egress_check(principal_arn)
-    elif check == "mutation":
-        perform_privilege_mutation_check(principal_arn)
-    else:
+    results: dict = {}
+
+    if check in ("ingress", "all"):
+        result = perform_ingress_check(principal_arn, output_json)
+        if output_json:
+            results["ingress"] = result
+
+    if check in ("egress", "all"):
+        result = perform_egress_check(principal_arn, output_json)
+        if output_json:
+            results["egress"] = result
+
+    if check in ("mutation", "all"):
+        result = perform_privilege_mutation_check(principal_arn, output_json)
+        if output_json:
+            results["mutation"] = result
+
+    if check not in ("ingress", "egress", "mutation", "all"):
         console.print(f"[red]Unsupported check type: {check}[/red]")
         raise typer.Exit(code=1)
+
+    if output_json:
+        console.print(json.dumps(results, indent=2))
 
 
 def is_valid_arn(arn: str) -> bool:
     """Basic ARN format validation."""
+    # Support roles and users
     return arn.startswith("arn:aws:iam::")
 
 
-def get_risk_style(risk: str) -> str:
+def get_risk_style(risk: RiskLevel | str) -> str:
     """Return Rich style for risk level."""
+    risk_str = risk.value if isinstance(risk, RiskLevel) else risk
     styles = {
         "CRITICAL": "white on red bold",
         "HIGH": "red bold",
@@ -70,158 +85,121 @@ def get_risk_style(risk: str) -> str:
         "LOW": "green",
         "INFO": "dim",
     }
-    return styles.get(risk, "white")
+    return styles.get(risk_str, "white")
 
 
-def perform_ingress_check(principal_arn: str) -> None:
+def perform_ingress_check(principal_arn: str, output_json: bool = False) -> dict | None:
     """Run the INGRESS check and display results."""
-    from iamwho.checks import ingress
+    from iamwho.checks.ingress import analyze_ingress
 
-    result = ingress.run(principal_arn)
+    result = analyze_ingress(principal_arn)
 
-    if result["status"] == "error":
-        console.print(f"[red]Error:[/red] {result['message']}")
-        return
+    if output_json:
+        return result.to_dict()
 
-    if result["status"] == "not_applicable":
-        console.print(f"[yellow]{result['message']}[/yellow]")
-        return
+    # Print header
+    console.print(f"\n[bold blue]INGRESS Analysis: {result.role_arn}[/bold blue]")
+    console.print("=" * 60)
 
-    console.print(f"\n[bold blue]{result['message']}[/bold blue]\n")
+    # Handle errors
+    if result.error:
+        console.print(f"[red]Error:[/red] {result.error}")
+        return None
 
-    if not result["findings"]:
-        console.print("  [dim](No trust principals found)[/dim]\n")
-        return
+    # Handle no findings
+    if not result.findings:
+        console.print("[dim](No trust relationships found)[/dim]\n")
+        return None
 
-    for f in result["findings"]:
-        risk = f["risk"]
-        style = get_risk_style(risk)
-
-        console.print(f"  [{style}][{risk}][/{style}] {f['trusted_entity']}")
-
-        details = f"        Type: [cyan]{f['type']}[/cyan] | Assume: [cyan]{f['assume_type']}[/cyan]"
-        if f.get("sid") and f["sid"] != "(no Sid)":
-            details += f" | Sid: {f['sid']}"
-        console.print(details)
-
-        console.print(f"        [dim]{f['explanation']}[/dim]")
-
-        if f.get("conditions"):
-            cond_keys = list(f["conditions"].keys())
-            console.print(f"        Conditions: {cond_keys}")
-
-        console.print()
-
-
-def perform_egress_check(principal_arn: str) -> None:
-    """Run the EGRESS check and display results."""
-    from iamwho.checks import egress
-
-    result = egress.run(principal_arn)
-
-    if result["status"] == "error":
-        console.print(f"[red]Error:[/red] {result['message']}")
-        return
-
-    if result["status"] == "not_applicable":
-        console.print(f"[yellow]{result['message']}[/yellow]")
-        return
-
-    console.print(f"\n[bold blue]{result['message']}[/bold blue]")
-
-    summary = result.get("summary")
-    if summary:
-        verdict = summary["verdict"]
-        verdict_style = get_risk_style(verdict)
-        console.print(f"  Overall: [{verdict_style}][{verdict}][/{verdict_style}] {summary['verdict_explanation']}")
-        if summary["categories"]:
-            console.print(f"  Categories: {', '.join(summary['categories'])}")
-    console.print()
-
-    if not result["findings"]:
-        console.print("  [dim](No dangerous permissions detected)[/dim]\n")
-        return
-
-    for risk_level in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]:
-        level_findings = [f for f in result["findings"] if f["risk"] == risk_level]
-        if not level_findings:
-            continue
-
-        style = get_risk_style(risk_level)
-        console.print(f"  [{style}]-- {risk_level} ({len(level_findings)}) --[/{style}]")
-
-        for f in level_findings:
-            scope_tag = "[red](ALL)[/red]" if f["resource_scope"] == "ALL" else "[green](SCOPED)[/green]"
-            console.print(f"    {scope_tag} [bold]{f['action']}[/bold]")
-            console.print(f"       {f['explanation']}")
-            console.print(f"       [dim]Source: {f['source']}[/dim]")
-        console.print()
-
-
-def perform_privilege_mutation_check(principal_arn: str) -> None:
-    """Run the PRIVILEGE MUTATION check and display results."""
-    from iamwho.checks import privilege_mutation
-
-    result = privilege_mutation.run(principal_arn)
-
-    if result["status"] == "error":
-        console.print(f"[red]Error:[/red] {result['message']}")
-        return
-
-    if result["status"] == "not_applicable":
-        console.print(f"[yellow]{result['message']}[/yellow]")
-        return
-
-    console.print(f"\n[bold blue]{result['message']}[/bold blue]")
-
-    # Overall verdict
-    overall_risk = result.get("overall_risk", "LOW")
-    verdict = result.get("verdict", "No escalation paths found")
-    verdict_style = get_risk_style(overall_risk)
-    console.print(f"  [{verdict_style}]{verdict}[/{verdict_style}]")
-    console.print()
-
-    # Direct escalation paths
-    direct = result.get("direct_escalations", [])
-    if direct:
-        console.print("  [bold]Direct Escalation Paths:[/bold]")
-        for f in direct:
-            style = get_risk_style(f["risk"])
-            scope_tag = "[red](ALL)[/red]" if f["resource_scope"] == "ALL" else "[green](SCOPED)[/green]"
-            console.print(f"    [{style}][{f['risk']}][/{style}] {scope_tag} [bold]{f['action']}[/bold]")
-            console.print(f"       Category: {f['category']}")
-            console.print(f"       Attack: {f['escalation_path']}")
-            console.print(f"       [dim]Source: {f['source_policy']}[/dim]")
-        console.print()
-
-    # Dangerous combinations
-    combos = result.get("combination_escalations", [])
-    if combos:
-        console.print("  [bold]Dangerous Combinations:[/bold]")
-        for c in combos:
-            style = get_risk_style(c["risk"])
-            actions_str = " + ".join(c["actions"])
-            console.print(f"    [{style}][{c['risk']}][/{style}] [bold]{actions_str}[/bold]")
-            console.print(f"       Attack: {c['escalation_path']}")
-        console.print()
-
-    # Potential escalations (require combinations but only one piece found)
-    potential = result.get("potential_escalations", [])
-    if potential:
-        console.print("  [bold dim]Potential Escalations (require additional access):[/bold dim]")
-        for f in potential:
-            console.print(f"    [dim][{f['risk']}] {f['action']} - {f['description']}[/dim]")
-        console.print()
-
-    # Summary
-    summary = result.get("summary", {})
+    # Overall risk
+    overall_style = get_risk_style(result.highest_risk)
     console.print(
-        f"  [dim]Escalation paths: "
-        f"{summary.get('critical_count', 0)} critical, "
-        f"{summary.get('high_count', 0)} high, "
-        f"{summary.get('medium_count', 0)} potential[/dim]"
+        f"Overall Risk: [{overall_style}]{result.highest_risk.value}[/{overall_style}] "
+        f"| Findings: {len(result.findings)}"
     )
     console.print()
+
+    # Sort findings by risk (highest first)
+    sorted_findings = sorted(result.findings, key=lambda f: f.risk, reverse=True)
+
+    for finding in sorted_findings:
+        risk_style = get_risk_style(finding.risk)
+
+        # Main finding line
+        console.print(
+            f"  [{risk_style}][{finding.risk.value}][/{risk_style}] "
+            f"{finding.principal}"
+        )
+
+        # Details line
+        details = (
+            f"        Type: [cyan]{finding.principal_type.value}[/cyan] | "
+            f"Assume: [cyan]{finding.assume_type.value}[/cyan]"
+        )
+        if finding.statement_id:
+            details += f" | Sid: {finding.statement_id}"
+        console.print(details)
+
+        # Reasons
+        for reason in finding.reasons:
+            console.print(f"        [dim]{reason}[/dim]")
+
+        # Conditions summary
+        protections = _get_protection_summary(finding.conditions)
+        if protections:
+            console.print(f"        Conditions: [green]{', '.join(protections)}[/green]")
+
+        console.print()
+
+    return None
+
+
+def _get_protection_summary(conditions) -> list[str]:
+    """Extract list of active protections from conditions."""
+    protections: list[str] = []
+    if conditions.has_external_id:
+        protections.append("ExternalId")
+    if conditions.has_source_arn:
+        protections.append("SourceArn")
+    if conditions.has_source_account:
+        protections.append("SourceAccount")
+    if conditions.has_principal_org_id:
+        protections.append("PrincipalOrgID")
+    if conditions.has_principal_arn:
+        protections.append("PrincipalArn")
+    if conditions.has_oidc_sub_claim:
+        protections.append("OIDC:sub")
+    if conditions.has_oidc_aud_claim:
+        protections.append("OIDC:aud")
+    if conditions.has_saml_aud:
+        protections.append("SAML:aud")
+    return protections
+
+
+def perform_egress_check(principal_arn: str, output_json: bool = False) -> dict | None:
+    """Run the EGRESS check (stub)."""
+    if output_json:
+        return {"status": "not_implemented", "message": "EGRESS check not yet implemented"}
+
+    console.print("\n[bold blue]EGRESS Analysis[/bold blue]")
+    console.print("=" * 60)
+    console.print("[yellow]Not yet implemented[/yellow]")
+    console.print("[dim]Will analyze: attached policies, inline policies, permission boundaries[/dim]")
+    console.print()
+    return None
+
+
+def perform_privilege_mutation_check(principal_arn: str, output_json: bool = False) -> dict | None:
+    """Run the PRIVILEGE MUTATION check (stub)."""
+    if output_json:
+        return {"status": "not_implemented", "message": "MUTATION check not yet implemented"}
+
+    console.print("\n[bold blue]PRIVILEGE MUTATION Analysis[/bold blue]")
+    console.print("=" * 60)
+    console.print("[yellow]Not yet implemented[/yellow]")
+    console.print("[dim]Will analyze: iam:*, sts:*, escalation primitives, dangerous combinations[/dim]")
+    console.print()
+    return None
 
 
 if __name__ == "__main__":
