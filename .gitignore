@@ -24,3 +24,6 @@ dist/
 build/
 *.egg-info/
 EOF
+__pycache__/ *.pyc
+__pycache__/
+*.pyc
