@@ -33,7 +33,6 @@ def get_risk_label(risk: RiskLevel | str) -> str:
     """Return formatted risk label with consistent width."""
     risk_str = risk.value if isinstance(risk, RiskLevel) else risk
     style = RISK_STYLES.get(risk_str, "white")
-    # Fixed 8-char width for alignment
     return f"[{style}]{risk_str:<8}[/{style}]"
 
 
@@ -221,7 +220,6 @@ def perform_ingress_check(
     for finding in sorted_findings:
         risk_label = get_risk_label(finding.risk)
 
-        # Scope indicator
         if finding.principal == "*":
             scope = "[bold red]*[/bold red]"
         else:
@@ -237,7 +235,6 @@ def perform_ingress_check(
             details += f" | Sid: {finding.statement_id}"
         console.print(details)
 
-        # Always show reasons (they're useful)
         for reason in finding.reasons:
             console.print(f"           [dim]> {reason}[/dim]")
 
@@ -245,7 +242,6 @@ def perform_ingress_check(
         if protections:
             console.print(f"           [green]+ Conditions: {', '.join(protections)}[/green]")
 
-        # Verbose: show remediation hints
         if verbose:
             remediation = _get_ingress_remediation(finding)
             if remediation:
@@ -341,7 +337,6 @@ def perform_egress_check(
     for finding in result["findings"]:
         risk_label = get_risk_label(finding["risk"])
 
-        # Scope indicator: * for wildcard, ~ for scoped
         if finding["resource_scope"] == "ALL":
             scope = "[bold red]*[/bold red]"
         else:
@@ -361,7 +356,6 @@ def perform_egress_check(
             cond_keys = list(finding["conditions"].keys())
             console.print(f"           [green]+ Conditions: {', '.join(cond_keys)}[/green]")
 
-        # Verbose: show remediation
         if verbose:
             remediation = _get_egress_remediation(finding)
             if remediation:
@@ -392,7 +386,7 @@ def _get_egress_remediation(finding: dict) -> str | None:
 
 
 # ─────────────────────────────────────────────────────────────
-# MUTATION Check
+# MUTATION Check (Hybrid Style)
 # ─────────────────────────────────────────────────────────────
 def perform_mutation_check(
         principal_arn: str,
@@ -424,17 +418,16 @@ def perform_mutation_check(
     combos = result.get("combination_escalations", [])
     potential = result.get("potential_escalations", [])
 
-    # No escalation paths found
     if not direct and not combos:
         console.print()
-        console.print("  [green]No escalation paths detected[/green]")
+        console.print("  [green]✓ No escalation paths detected[/green]")
 
         if verbose and potential:
             console.print()
             console.print("  [dim]Potential (requires additional access):[/dim]")
             for p in potential[:5]:
                 console.print(
-                    f"  [dim]  - {p['action']} -> {p['escalation_path']}[/dim]"
+                    f"    [dim]• {p['action']} -> {p['escalation_path']}[/dim]"
                 )
         console.print()
         return None
@@ -444,83 +437,70 @@ def perform_mutation_check(
 
     console.print()
 
-    # Build display paths
-    all_paths: list[dict] = []
-
+    # Render direct escalations (Hybrid style)
     for esc in direct:
-        all_paths.append({
-            "display": esc["action"],
-            "target": _truncate(esc["escalation_path"], 28),
-            "risk": esc["risk"],
-            "description": esc["description"],
-            "category": esc.get("category", ""),
-        })
+        risk = esc["risk"]
+        action = esc["action"]
+        escalation = esc["escalation_path"]
+        description = esc.get("description", "")
+        category = esc.get("category", "")
+        style = RISK_STYLES.get(risk, "white")
 
-    for combo in combos:
-        all_paths.append({
-            "display": " + ".join(combo["actions"]),
-            "target": _truncate(combo["escalation_path"], 28),
-            "risk": combo["risk"],
-            "description": combo["description"],
-            "category": "COMBINATION",
-        })
+        # Risk and action on first line
+        risk_col = f"[{style}]{risk:<8}[/{style}]"
+        console.print(f"  {risk_col}  [bold white]{action}[/bold white]")
 
-    # Sort by risk (CRITICAL first)
-    risk_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
-    all_paths.sort(key=lambda p: risk_order.get(p["risk"], 99))
+        # Escalation path on second line with arrow
+        console.print(f"        [dim]└─>[/dim] {escalation}")
 
-    # Render tree
-    for i, path in enumerate(all_paths):
-        is_last = i == len(all_paths) - 1
-        prefix = "└──" if is_last else "├──"
-        continuation = "   " if is_last else "│  "
-
-        # Build display and calculate dots
-        display_text = f"{path['display']} -> {path['target']}"
-        total_width = 48
-        dots_needed = max(3, total_width - len(display_text))
-        dots = "." * dots_needed
-
-        # Risk style
-        style = RISK_STYLES.get(path["risk"], "white")
-
-        # Main line
-        console.print(
-            f"  {prefix} {display_text} [dim]{dots}[/dim] [{style}]{path['risk']}[/{style}]"
-        )
-
-        # Verbose: show details
+        # Verbose: show description and category
         if verbose:
-            console.print(f"  {continuation}     [dim]{path['description']}[/dim]")
-            if path.get("category"):
-                console.print(
-                    f"  {continuation}     [dim]Category: {path['category']}[/dim]"
-                )
+            if description:
+                console.print(f"            [dim]{description}[/dim]")
+            if category:
+                console.print(f"            [dim]Category: {category}[/dim]")
 
-        # Spacing
-        if not is_last:
-            console.print("  │")
+        console.print()
+
+    # Render combination escalations (Hybrid style with COMBO tag)
+    for combo in combos:
+        risk = combo["risk"]
+        actions = " + ".join(combo["actions"])
+        escalation = combo["escalation_path"]
+        description = combo.get("description", "")
+        style = RISK_STYLES.get(risk, "white")
+
+        # Risk and actions on first line with COMBO tag
+        risk_col = f"[{style}]{risk:<8}[/{style}]"
+        console.print(f"  {risk_col}  [bold white]{actions}[/bold white]  [magenta][COMBO][/magenta]")
+
+        # Escalation path on second line with arrow
+        console.print(f"        [dim]└─>[/dim] {escalation}")
+
+        # Verbose: show description
+        if verbose and description:
+            console.print(f"            [dim]{description}[/dim]")
+
+        console.print()
 
     # Potential escalations (verbose only)
     if verbose and potential:
-        console.print()
         console.print("  [dim]Potential (requires additional access):[/dim]")
         for p in potential[:5]:
             console.print(
-                f"  [dim]  - {p['action']} -> {p['escalation_path']}[/dim]"
+                f"    [dim]• {p['action']} -> {p['escalation_path']}[/dim]"
             )
         if len(potential) > 5:
-            console.print(f"  [dim]  ... and {len(potential) - 5} more[/dim]")
+            console.print(f"    [dim]... and {len(potential) - 5} more[/dim]")
+        console.print()
 
-    console.print()
-
-    # Verdict
+    # Verdict line with separator
+    console.print("[dim]" + "-" * 60 + "[/dim]")
     verdict = result.get("verdict", "")
     if verdict:
         overall = result.get("overall_risk", "LOW")
         style = RISK_STYLES.get(overall, "white")
-        console.print(f"  [{style}]{verdict}[/{style}]")
-        console.print()
+        console.print(f"  [bold]Verdict:[/bold] [{style}]{verdict}[/{style}]")
 
     return None
 
