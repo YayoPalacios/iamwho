@@ -1,4 +1,6 @@
+# src/iamwho/checks/ingress.py
 """INGRESS check: Analyze who/what can assume a role via trust policy."""
+
 from typing import Any
 
 import boto3
@@ -14,21 +16,12 @@ from iamwho.models import (
 )
 
 
+# =============================================================================
+# MAIN ANALYSIS
+# =============================================================================
+
 def analyze_ingress(role_arn: str) -> IngressResult:
-    """
-    Analyze a role's trust policy for security issues.
-
-    Examines:
-    - Who can assume the role (principals)
-    - How they assume it (action type)
-    - What restrictions exist (conditions)
-
-    Args:
-        role_arn: Full ARN of the IAM role to analyze
-
-    Returns:
-        IngressResult with findings and overall risk assessment
-    """
+    """Analyze a role's trust policy for security issues."""
     result = IngressResult(role_arn=role_arn)
 
     role_name = _extract_role_name(role_arn)
@@ -42,7 +35,6 @@ def analyze_ingress(role_arn: str) -> IngressResult:
         return result
 
     if isinstance(trust_policy, str):
-        # Error message returned
         result.error = trust_policy
         return result
 
@@ -51,29 +43,27 @@ def analyze_ingress(role_arn: str) -> IngressResult:
         statements = [statements]
 
     for statement in statements:
-        # Skip Deny statements for now (they reduce risk, not add it)
         if statement.get("Effect") != "Allow":
             continue
-
         findings = _analyze_statement(statement)
         result.findings.extend(findings)
 
-    # Calculate highest risk
     if result.findings:
         result.highest_risk = max(f.risk for f in result.findings)
 
     return result
 
 
+# =============================================================================
+# HELPERS
+# =============================================================================
+
 def _extract_role_name(role_arn: str) -> str | None:
     """Extract role name from ARN."""
-    # Format: arn:aws:iam::ACCOUNT:role/ROLE_NAME
-    # Or: arn:aws:iam::ACCOUNT:role/path/to/ROLE_NAME
     if ":role/" not in role_arn:
         return None
     try:
         role_path = role_arn.split(":role/")[1]
-        # Handle paths: take the last segment
         return role_path.split("/")[-1]
     except IndexError:
         return None
@@ -103,11 +93,7 @@ def _analyze_statement(statement: dict[str, Any]) -> list[TrustFinding]:
     statement_id = statement.get("Sid")
     actions = _normalize_to_list(statement.get("Action", []))
     conditions = _analyze_conditions(statement.get("Condition", {}))
-
-    # Determine assume type from actions
     assume_type = _classify_assume_type(actions)
-
-    # Extract and analyze principals
     principals = _extract_principals(statement)
 
     for principal in principals:
@@ -143,7 +129,6 @@ def _normalize_to_list(value: Any) -> list[str]:
 
 def _classify_assume_type(actions: list[str]) -> AssumeType:
     """Classify the assume action type."""
-    # Check for specific assume types (more specific first)
     for action in actions:
         action_lower = action.lower()
         if "assumerolewithwebidentity" in action_lower:
@@ -153,9 +138,8 @@ def _classify_assume_type(actions: list[str]) -> AssumeType:
         if "assumerole" in action_lower:
             return AssumeType.ASSUME_ROLE
 
-    # Wildcard action
     if "*" in actions or "sts:*" in actions:
-        return AssumeType.ASSUME_ROLE  # Assume worst case
+        return AssumeType.ASSUME_ROLE
 
     return AssumeType.UNKNOWN
 
@@ -165,11 +149,9 @@ def _extract_principals(statement: dict[str, Any]) -> list[str]:
     principal_field = statement.get("Principal", {})
     principals: list[str] = []
 
-    # Handle Principal: "*"
     if principal_field == "*":
         return ["*"]
 
-    # Handle Principal: {"AWS": "*"} or {"AWS": ["arn:..."]}
     if isinstance(principal_field, dict):
         for key, value in principal_field.items():
             if isinstance(value, str):
@@ -185,19 +167,15 @@ def _classify_principal(principal: str) -> PrincipalType:
     if principal == "*":
         return PrincipalType.WILDCARD
 
-    # Service principals: service.amazonaws.com
     if principal.endswith(".amazonaws.com") or principal.endswith(".aws.internal"):
         return PrincipalType.SERVICE
 
-    # SAML providers
     if ":saml-provider/" in principal:
         return PrincipalType.FEDERATED_SAML
 
-    # OIDC providers
     if ":oidc-provider/" in principal:
         return PrincipalType.FEDERATED_OIDC
 
-    # AWS principals
     if principal.startswith("arn:aws:iam::"):
         if ":root" in principal:
             return PrincipalType.AWS_ROOT
@@ -206,7 +184,6 @@ def _classify_principal(principal: str) -> PrincipalType:
         if ":user/" in principal:
             return PrincipalType.AWS_USER
 
-    # Account ID only (e.g., "123456789012")
     if principal.isdigit() and len(principal) == 12:
         return PrincipalType.AWS_ACCOUNT
 
@@ -217,13 +194,11 @@ def _analyze_conditions(raw_conditions: dict[str, Any]) -> ConditionAnalysis:
     """Analyze conditions for security-relevant keys."""
     analysis = ConditionAnalysis(raw_conditions=raw_conditions)
 
-    # Flatten all condition keys for analysis
     all_keys: set[str] = set()
     for operator_block in raw_conditions.values():
         if isinstance(operator_block, dict):
             all_keys.update(operator_block.keys())
 
-    # Check for specific condition keys
     for key in all_keys:
         key_lower = key.lower()
 
@@ -237,7 +212,6 @@ def _analyze_conditions(raw_conditions: dict[str, Any]) -> ConditionAnalysis:
             analysis.has_principal_org_id = True
         elif key_lower == "aws:principalarn":
             analysis.has_principal_arn = True
-        # OIDC-specific conditions
         elif ":sub" in key_lower:
             analysis.has_oidc_sub_claim = True
         elif ":aud" in key_lower:
@@ -249,22 +223,15 @@ def _analyze_conditions(raw_conditions: dict[str, Any]) -> ConditionAnalysis:
 
 
 def _assess_risk(
-        principal: str,
-        principal_type: PrincipalType,
-        assume_type: AssumeType,
-        conditions: ConditionAnalysis,
+    principal: str,
+    principal_type: PrincipalType,
+    assume_type: AssumeType,
+    conditions: ConditionAnalysis,
 ) -> tuple[RiskLevel, list[str]]:
-    """
-    Assess risk level based on principal, assume type, and conditions.
-
-    Returns:
-        Tuple of (risk_level, list_of_reasons)
-    """
+    """Assess risk level based on principal, assume type, and conditions."""
     reasons: list[str] = []
 
-    # CRITICAL: Wildcard without meaningful restrictions
     if principal_type == PrincipalType.WILDCARD:
-        # These conditions actually restrict WHO can assume
         if conditions.has_principal_org_id:
             reasons.append("Wildcard principal restricted by PrincipalOrgID")
             return RiskLevel.HIGH, reasons
@@ -272,7 +239,6 @@ def _assess_risk(
             reasons.append("Wildcard principal restricted by PrincipalArn")
             return RiskLevel.HIGH, reasons
 
-        # ExternalId exists but isn't sufficient for wildcards
         if conditions.has_external_id:
             reasons.append(
                 "Wildcard principal with only ExternalId protection "
@@ -284,7 +250,6 @@ def _assess_risk(
             )
             return RiskLevel.CRITICAL, reasons
 
-        # No meaningful protection at all
         reasons.append("Wildcard principal with no meaningful restriction")
         reasons.append(
             "Remediation: Add Condition with aws:PrincipalOrgID or aws:PrincipalArn, "
@@ -292,7 +257,6 @@ def _assess_risk(
         )
         return RiskLevel.CRITICAL, reasons
 
-    # Service principals: check confused deputy protection
     if principal_type == PrincipalType.SERVICE:
         if not conditions.has_confused_deputy_protection:
             reasons.append(
@@ -306,7 +270,6 @@ def _assess_risk(
         reasons.append("Service principal with confused deputy protection")
         return RiskLevel.INFO, reasons
 
-    # OIDC federation: check claim restrictions
     if principal_type == PrincipalType.FEDERATED_OIDC:
         if not conditions.has_oidc_claim_restriction:
             reasons.append(
@@ -321,12 +284,10 @@ def _assess_risk(
         reasons.append("OIDC federation with claim restrictions")
         return RiskLevel.LOW, reasons
 
-    # SAML federation
     if principal_type == PrincipalType.FEDERATED_SAML:
         reasons.append("SAML federation (verify IdP is trusted)")
         return RiskLevel.LOW, reasons
 
-    # AWS root account trust
     if principal_type == PrincipalType.AWS_ROOT:
         if not conditions.has_cross_account_protection:
             reasons.append(
@@ -341,12 +302,10 @@ def _assess_risk(
         reasons.append("AWS account trust with conditions")
         return RiskLevel.LOW, reasons
 
-    # AWS role/user trust
     if principal_type in (PrincipalType.AWS_ROLE, PrincipalType.AWS_USER):
         reasons.append(f"Trusts specific {principal_type.value}")
         return RiskLevel.LOW, reasons
 
-    # AWS account (12-digit)
     if principal_type == PrincipalType.AWS_ACCOUNT:
         reasons.append("Trusts entire AWS account by ID")
         reasons.append(
@@ -355,13 +314,137 @@ def _assess_risk(
         )
         return RiskLevel.MEDIUM, reasons
 
-    # Unknown/unclassified
     reasons.append("Unclassified principal type - review manually")
     return RiskLevel.MEDIUM, reasons
 
 
+# =============================================================================
+# RENDERING (with escape() for bulletproof output)
+# =============================================================================
+
+RISK_COLORS: dict[str, str] = {
+    "CRITICAL": "red1",
+    "HIGH": "orange1",
+    "MEDIUM": "yellow",
+    "LOW": "green",
+    "INFO": "dim",
+}
+
+
+def format_ingress(result: IngressResult, verbose: bool = False) -> None:
+    """Render ingress analysis to console."""
+    from rich.console import Console
+    from rich.markup import escape
+    from rich.text import Text
+
+    console = Console()
+
+    console.print()
+    console.print("[bold][ INGRESS ][/bold] Who can assume this role?")
+    console.print("-" * 60)
+
+    if result.error:
+        console.print(f"  [red]Error: {escape(result.error)}[/red]")
+        console.print()
+        return
+
+    if not result.findings:
+        console.print("  [green]No trust relationships found[/green]")
+        console.print()
+        return
+
+    sorted_findings = sorted(result.findings, key=lambda f: f.risk, reverse=True)
+
+    for finding in sorted_findings:
+        _render_ingress_finding(console, finding, verbose)
+
+    console.print()
+
+
+def _render_ingress_finding(console, finding: TrustFinding, verbose: bool) -> None:
+    """Render a single ingress finding with escape() for safety."""
+    from rich.markup import escape
+    from rich.text import Text
+
+    risk = finding.risk.value
+    risk_color = RISK_COLORS.get(risk, "white")
+
+    # Line 1: Risk + Principal
+    line = Text()
+    line.append("  ")
+    line.append(f"{risk:8}", style=risk_color)
+    line.append(" ")
+    line.append(escape(finding.principal), style="bold white")  # ESCAPED
+    console.print(line)
+
+    # Line 2: Type info
+    type_line = Text()
+    type_line.append("           Type: ", style="dim")
+    type_line.append(escape(finding.principal_type.value), style="cyan")  # ESCAPED
+    type_line.append(" | Assume: ", style="dim")
+    type_line.append(escape(finding.assume_type.value), style="white")  # ESCAPED
+    console.print(type_line)
+
+    # Reasons
+    for reason in finding.reasons:
+        reason_line = Text()
+        reason_line.append("           > ", style="dim")
+
+        if reason.startswith("Remediation:"):
+            reason_line.append(escape(reason), style="dim green")  # ESCAPED
+        else:
+            reason_line.append(escape(reason), style="dim")  # ESCAPED
+
+        console.print(reason_line)
+
+    if verbose:
+        _render_condition_details(console, finding.conditions)
+
+    console.print()
+
+
+def _render_condition_details(console, conditions: ConditionAnalysis) -> None:
+    """Render condition details for verbose output."""
+    from rich.markup import escape
+    from rich.text import Text
+
+    protections: list[str] = []
+
+    if conditions.has_external_id:
+        protections.append("ExternalId")
+    if conditions.has_source_arn:
+        protections.append("SourceArn")
+    if conditions.has_source_account:
+        protections.append("SourceAccount")
+    if conditions.has_principal_org_id:
+        protections.append("PrincipalOrgID")
+    if conditions.has_principal_arn:
+        protections.append("PrincipalArn")
+    if conditions.has_oidc_sub_claim:
+        protections.append("OIDC:sub")
+    if conditions.has_oidc_aud_claim:
+        protections.append("OIDC:aud")
+    if conditions.has_saml_aud:
+        protections.append("SAML:aud")
+
+    if protections:
+        cond_line = Text()
+        cond_line.append("           Conditions: ", style="dim")
+        cond_line.append(", ".join(protections), style="dim cyan")
+        console.print(cond_line)
+
+    if conditions.raw_conditions and protections:
+        raw_line = Text()
+        raw_line.append("           Raw: ", style="dim")
+        raw_str = str(conditions.raw_conditions)
+        if len(raw_str) > 60:
+            raw_str = raw_str[:57] + "..."
+        raw_line.append(escape(raw_str), style="dim")  # ESCAPED
+        console.print(raw_line)
+
+
 def format_findings(result: IngressResult) -> str:
-    """Format findings for CLI output."""
+    """Format findings for CLI output (legacy text format)."""
     lines: list[str] = []
 
     lines.append(f"INGRESS Analysis: {result.role_arn}")
@@ -379,7 +462,6 @@ def format_findings(result: IngressResult) -> str:
     lines.append(f"Findings: {len(result.findings)}")
     lines.append("")
 
-    # Sort by risk (highest first)
     sorted_findings = sorted(result.findings, key=lambda f: f.risk, reverse=True)
 
     for i, finding in enumerate(sorted_findings, 1):
@@ -391,7 +473,6 @@ def format_findings(result: IngressResult) -> str:
         for reason in finding.reasons:
             lines.append(f"    - {reason}")
 
-        # Show relevant condition info
         cond = finding.conditions
         protections: list[str] = []
         if cond.has_external_id:
@@ -414,3 +495,10 @@ def format_findings(result: IngressResult) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+# =============================================================================
+# MODULE ALIASES
+# =============================================================================
+
+run = analyze_ingress

@@ -9,7 +9,7 @@ from rich.console import Console
 from iamwho.models import RiskLevel
 
 app = typer.Typer(help="Analyze AWS IAM principals for security insights.")
-console = Console()
+console = Console(highlight=False)
 
 # ─────────────────────────────────────────────────────────────
 # Risk styling (color only, no emojis)
@@ -57,9 +57,15 @@ class FindingsSummary:
         self.checks_run.append("INGRESS")
 
     def add_from_egress(self, result: dict):
+        # Try the expected structure first
         if result.get("summary") and result["summary"].get("risk_counts"):
             for risk, count in result["summary"]["risk_counts"].items():
                 self.add(risk, count)
+        # Fallback: count from findings directly
+        elif result.get("findings"):
+            for finding in result["findings"]:
+                risk = finding.get("risk", "INFO")
+                self.add(risk)
         self.checks_run.append("EGRESS")
 
     def add_from_mutation(self, result: dict):
@@ -330,8 +336,13 @@ def perform_egress_check(
     if summary:
         summary.add_from_egress(result)
 
+    # Legend and categories
+    console.print(
+        "  [dim]Scope: [bold red]*[/bold red] = all resources | "
+        "[green]~[/green] = scoped[/dim]"
+    )
     if result_summary["categories"]:
-        console.print(f"  Categories: [cyan]{', '.join(result_summary['categories'])}[/cyan]")
+        console.print(f"  [dim]Categories:[/dim] [cyan]{', '.join(result_summary['categories'])}[/cyan]")
     console.print()
 
     for finding in result["findings"]:
@@ -344,19 +355,20 @@ def perform_egress_check(
 
         console.print(f"  {risk_label} {scope} {finding['action']}")
         console.print(f"           [dim]{finding['explanation']}[/dim]")
-        console.print(f"           Source: [cyan]{finding['source']}[/cyan]")
-
-        if finding["resource_scope"] == "SCOPED" and finding["resources"]:
-            res = finding["resources"][0]
-            if len(res) > 50:
-                res = res[:47] + "..."
-            console.print(f"           Resource: [dim]{res}[/dim]")
-
-        if finding["conditions"]:
-            cond_keys = list(finding["conditions"].keys())
-            console.print(f"           [green]+ Conditions: {', '.join(cond_keys)}[/green]")
 
         if verbose:
+            console.print(f"           Source: [cyan]{finding['source']}[/cyan]")
+
+            if finding["resource_scope"] == "SCOPED" and finding["resources"]:
+                res = finding["resources"][0]
+                if len(res) > 50:
+                    res = res[:47] + "..."
+                console.print(f"           Resource: [dim]{res}[/dim]")
+
+            if finding["conditions"]:
+                cond_keys = list(finding["conditions"].keys())
+                console.print(f"           [green]+ Conditions: {', '.join(cond_keys)}[/green]")
+
             remediation = _get_egress_remediation(finding)
             if remediation:
                 console.print(f"           [cyan]Remediation:[/cyan] [dim]{remediation}[/dim]")

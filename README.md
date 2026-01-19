@@ -1,131 +1,117 @@
 # iamwho
 
-**iamwho** is a static **AWS IAM security analyzer** that helps you understand:
+**iamwho** is a static **AWS IAM security analyzer** that helps you
+understand:
 
-- **Who can assume a role** (ingress / trust policies)
-- **What that role can do** (egress / effective permissions)
-- **How privileges could expand** (mutation / escalation paths – upcoming)
+-   **Who can assume a role** (INGRESS -- trust policies)
+-   **What that role can do** (EGRESS -- effective permissions)
+-   **How privileges could escalate** (MUTATION -- escalation paths)
 
-It is designed for **security analysis**, not IAM usage tutorials.
+Built for **security analysis**, not IAM tutorials.
 
----
-
-## What it does
-
-| Analysis | Description |
-|--------|-------------|
-| **INGRESS** | Who can assume this role? (trust policy analysis) |
-| **EGRESS** | What can this role do? (attached & inline policies) |
-| **PRIVILEGE MUTATION** | Can it escalate further? *(coming soon)* |
-
----
+------------------------------------------------------------------------
 
 ## Installation
 
-```bash
-# Clone the repository
+``` bash
 git clone https://github.com/YayoPalacios/iamwho.git
 cd iamwho
-
-# Install in editable mode
 pip install -e .
-
-# Or run directly
-PYTHONPATH=src python -m iamwho.cli analyze <role-arn>
 ```
 
-**Requirements**
-- Python 3.9+
-- boto3
-- rich
+**Requirements** - Python 3.9+ - boto3 - rich - typer
 
----
+------------------------------------------------------------------------
 
 ## Usage
 
-```bash
-# Analyze a role
+``` bash
+# Run all checks
 iamwho analyze arn:aws:iam::123456789012:role/my-role
 
+# Run a specific check
+iamwho analyze <role-arn> --check egress
+iamwho analyze <role-arn> -c ingress
+
+# Verbose mode (shows explanations & remediations)
+iamwho analyze <role-arn> --verbose
+
+# JSON output (CI/CD friendly)
+iamwho analyze <role-arn> --json
+
 # Use a specific AWS profile
-AWS_PROFILE=prod iamwho analyze arn:aws:iam::123456789012:role/my-role
+AWS_PROFILE=prod iamwho analyze <role-arn>
 ```
 
----
+------------------------------------------------------------------------
 
 ## Example Output
 
-### INGRESS Analysis
+    TARGET: arn:aws:iam::123456789012:role/my-role
 
-```
-INGRESS Analysis: arn:aws:iam::123456789012:role/my-role
-============================================================
-Overall Risk: MEDIUM | Findings: 1
+    [ EGRESS ] What can this role do?
+    ------------------------------------------------------------
+      Scope: * = all resources | ~ = scoped
+      Categories: Compute, Data Access, Identity & Access
 
-[MEDIUM] arn:aws:iam::123456789012:root
-  Type: AWSRoot | Assume: AssumeRole
-  Trusts entire AWS account (root).
-  Remediation: Replace :root with specific role/user ARNs
-```
+      CRITICAL * iam:CreateUser
+               Can create new IAM users
 
----
+      CRITICAL * iam:AttachUserPolicy
+               Can attach policies to users
 
-### EGRESS Analysis
+      HIGH     * s3:GetObject
+               Can read S3 objects
 
-```
-EGRESS Analysis
-============================================================
-Verdict: CRITICAL | Findings: 9
+      HIGH     ~ lambda:InvokeFunction
+               Can invoke Lambda functions (scoped to specific resources)
 
-Categories: Identity & Access, Data Access, Privilege Escalation
-Breakdown:
-  CRITICAL: 3
-  HIGH: 2
-  MEDIUM: 4
+    ============================================================
+      RESULT: 2 CRITICAL | 2 HIGH
+      Checks: EGRESS
+    ============================================================
 
-[CRITICAL] [ALL] iam:CreateUser
-  Can create backdoor users
-  Source: Inline: DangerousPolicy
+------------------------------------------------------------------------
 
-[HIGH] [ALL] s3:GetObject
-  Can read S3 data (check Resource scope)
-  Source: Managed: arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+## Checks
 
-[MEDIUM] [SCOPED] lambda:InvokeFunction
-  Can invoke Lambdas (scoped to specific resources)
-  Resource: arn:aws:lambda:us-west-2:123456789012:function:my-func
-```
+| Check | Description |
+|:------|:------------|
+| `ingress` | Who can assume this role? (trust policy analysis) |
+| `egress` | What can this role do? (attached & inline policies) |
+| `mutation` | Can privileges escalate? (escalation path detection) |
 
 ---
 
 ## Risk Levels
 
 | Level | Meaning |
-|------|--------|
-| 🔴 **CRITICAL** | Privilege escalation, IAM mutation, admin access |
-| 🟠 **HIGH** | Broad data access, compute control |
-| 🟡 **MEDIUM** | Enumeration, scoped dangerous actions |
-| 🟢 **LOW** | Read-only, limited scope |
+|:------|:--------|
+| **CRITICAL** | Privilege escalation, IAM mutation, admin access |
+| **HIGH** | Broad data access, compute control |
+| **MEDIUM** | Enumeration, scoped dangerous actions |
+| **LOW** | Read-only, limited scope |
 
----
+------------------------------------------------------------------------
 
 ## Roadmap
 
-- INGRESS analysis (trust policies)
-- EGRESS analysis (permissions)
-- PRIVILEGE MUTATION (escalation paths)
-- `--output json` for CI/CD integration
-- Permission boundary analysis
-- SCP impact detection
-- Multi-role blast radius analysis
+-   INGRESS analysis (trust policies)
+-   EGRESS analysis (permissions)
+-   MUTATION analysis (escalation paths)
+-   `--json` output for CI/CD
+-   Permission boundary analysis
+-   SCP impact detection
+-   Multi-role blast radius analysis
 
----
+------------------------------------------------------------------------
 
 ## What iamwho does *not* do
 
-- Runtime detection or CloudTrail analysis
-- Full IAM policy simulation
-- Network or secrets analysis
-- Compliance mapping (CIS, SOC2, etc.)
+-   Runtime detection or CloudTrail analysis
+-   Full IAM policy simulation
+-   Network or secrets analysis
+-   Compliance mapping (CIS, SOC2, etc.)
 
-iamwho focuses on **static IAM graph analysis** to surface high-impact security risk early.
+**iamwho** focuses on **static IAM graph analysis** to surface
+high-impact security risk early.
