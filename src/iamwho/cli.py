@@ -5,6 +5,7 @@ import json
 
 import typer
 from rich.console import Console
+from rich.table import Table
 
 from iamwho.models import RiskLevel
 
@@ -12,21 +13,15 @@ app = typer.Typer(help="Analyze AWS IAM principals for security insights.")
 console = Console(highlight=False)
 
 # ─────────────────────────────────────────────────────────────
-# Risk styling (color only, no emojis)
+# Risk styling
 # ─────────────────────────────────────────────────────────────
 RISK_STYLES = {
     "CRITICAL": "bold white on red",
     "HIGH":     "bold red",
     "MEDIUM":   "yellow",
-    "LOW":      "green",
+    "LOW":      "cyan",
     "INFO":     "dim",
 }
-
-
-def get_risk_style(risk: RiskLevel | str) -> str:
-    """Return Rich style for risk level."""
-    risk_str = risk.value if isinstance(risk, RiskLevel) else risk
-    return RISK_STYLES.get(risk_str, "white")
 
 
 def get_risk_label(risk: RiskLevel | str) -> str:
@@ -37,43 +32,57 @@ def get_risk_label(risk: RiskLevel | str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-# Summary tracking
+# Summary tracking (enhanced for per-check stats)
 # ─────────────────────────────────────────────────────────────
 class FindingsSummary:
     """Track findings across all checks."""
 
     def __init__(self):
         self.counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
-        self.checks_run = []
+        self.checks_run = {}  # Dict: check_name -> {risk: count}
 
     def add(self, risk: str, count: int = 1):
         if risk in self.counts:
             self.counts[risk] += count
 
+    def _make_check_counts(self) -> dict:
+        return {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+
     def add_from_ingress(self, findings: list):
+        check_counts = self._make_check_counts()
         for f in findings:
             risk_str = f.risk.value if hasattr(f.risk, 'value') else f.risk
             self.add(risk_str)
-        self.checks_run.append("INGRESS")
+            if risk_str in check_counts:
+                check_counts[risk_str] += 1
+        self.checks_run["INGRESS"] = check_counts
 
     def add_from_egress(self, result: dict):
-        # Try the expected structure first
+        check_counts = self._make_check_counts()
         if result.get("summary") and result["summary"].get("risk_counts"):
             for risk, count in result["summary"]["risk_counts"].items():
                 self.add(risk, count)
-        # Fallback: count from findings directly
+                if risk in check_counts:
+                    check_counts[risk] = count
         elif result.get("findings"):
             for finding in result["findings"]:
                 risk = finding.get("risk", "INFO")
                 self.add(risk)
-        self.checks_run.append("EGRESS")
+                if risk in check_counts:
+                    check_counts[risk] += 1
+        self.checks_run["EGRESS"] = check_counts
 
     def add_from_mutation(self, result: dict):
         summary = result.get("summary", {})
-        self.add("CRITICAL", summary.get("critical_count", 0))
-        self.add("HIGH", summary.get("high_count", 0))
-        self.add("MEDIUM", summary.get("medium_count", 0))
-        self.checks_run.append("MUTATION")
+        check_counts = {
+            "CRITICAL": summary.get("critical_count", 0),
+            "HIGH": summary.get("high_count", 0),
+            "MEDIUM": summary.get("medium_count", 0),
+            "LOW": 0,
+        }
+        for risk, count in check_counts.items():
+            self.add(risk, count)
+        self.checks_run["MUTATION"] = check_counts
 
     def total(self) -> int:
         return sum(self.counts.values())
@@ -82,34 +91,60 @@ class FindingsSummary:
         for level in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]:
             if self.counts[level] > 0:
                 return level
-        return "LOW"
+        return "NONE"
+
+    def check_total(self, check_counts: dict) -> int:
+        return sum(check_counts.values())
+
+    def check_highest(self, check_counts: dict) -> str:
+        for level in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]:
+            if check_counts.get(level, 0) > 0:
+                return level
+        return "PASS"
 
 
-def print_summary_banner(summary: FindingsSummary):
-    """Print the final summary banner."""
+# ─────────────────────────────────────────────────────────────
+# UI: Summary Table + Exit Line
+# ─────────────────────────────────────────────────────────────
+def print_summary(summary: FindingsSummary):
+    """Print summary table and one-line exit."""
     if not summary.checks_run:
         return
 
     console.print()
-    console.print("[dim]" + "=" * 60 + "[/dim]")
+    console.print("[dim]" + "━" * 60 + "[/dim]")
 
+    # Summary table
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Check", style="bold", width=10)
+    table.add_column("Count", width=14)
+    table.add_column("Risk", width=10)
+
+    for check_name, counts in summary.checks_run.items():
+        total = summary.check_total(counts)
+        highest = summary.check_highest(counts)
+
+        if highest == "PASS":
+            table.add_row(check_name, "[dim]0 findings[/dim]", "[green]PASS[/green]")
+        else:
+            style = RISK_STYLES.get(highest, "white")
+            table.add_row(check_name, f"{total} findings", f"[{style}]{highest}[/{style}]")
+
+    console.print(table)
+    console.print("[dim]" + "━" * 60 + "[/dim]")
+
+    # One-line exit
     total = summary.total()
-
     if total == 0:
-        console.print("[bold green]  RESULT: PASS - No security findings[/bold green]")
+        console.print("[green]✓[/green] No security findings")
     else:
         parts = []
         for level in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]:
             count = summary.counts[level]
             if count > 0:
-                style = RISK_STYLES[level]
-                parts.append(f"[{style}]{count} {level}[/{style}]")
+                parts.append(f"{count} {level.lower()}")
+        console.print(f"[dim]→[/dim] {total} findings ({', '.join(parts)})")
 
-        console.print(f"  RESULT: {' | '.join(parts)}")
-
-    checks_str = ", ".join(summary.checks_run)
-    console.print(f"  [dim]Checks: {checks_str}[/dim]")
-    console.print("[dim]" + "=" * 60 + "[/dim]")
     console.print()
 
 
@@ -157,7 +192,7 @@ def analyze(
 
     if not output_json:
         console.print()
-        console.print(f"[bold white]TARGET:[/bold white] {principal_arn}")
+        console.print(f"[bold]TARGET[/bold] {principal_arn}")
 
     if check in ("ingress", "all"):
         result = perform_ingress_check(principal_arn, output_json, summary, verbose)
@@ -181,12 +216,35 @@ def analyze(
     if output_json:
         console.print(json.dumps(results, indent=2))
     else:
-        print_summary_banner(summary)
+        print_summary(summary)
 
 
 def is_valid_arn(arn: str) -> bool:
     """Basic ARN format validation."""
     return arn.startswith("arn:aws:iam::")
+
+
+# ─────────────────────────────────────────────────────────────
+# Compact finding renderer
+# ─────────────────────────────────────────────────────────────
+def print_finding(
+    risk: str,
+    scope: str,
+    title: str,
+    hint: str,
+    verbose_lines: list[str] | None = None,
+    verbose: bool = False,
+):
+    """Render a single finding: 2 lines default, more if verbose."""
+    risk_label = get_risk_label(risk)
+    scope_char = "[bold red]*[/bold red]" if scope == "ALL" else "[cyan]~[/cyan]"
+
+    console.print(f"  {risk_label} {scope_char} {title}")
+    console.print(f"           [dim]→ {hint}[/dim]")
+
+    if verbose and verbose_lines:
+        for line in verbose_lines:
+            console.print(f"           [dim]{line}[/dim]")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -211,48 +269,35 @@ def perform_ingress_check(
     console.print("[dim]" + "-" * 60 + "[/dim]")
 
     if result.error:
-        console.print(f"[red]Error:[/red] {result.error}")
+        console.print(f"  [red]Error:[/red] {result.error}")
         return None
 
     if not result.findings:
-        console.print("[dim]  (No trust relationships found)[/dim]")
+        console.print("  [dim]No trust relationships found[/dim]")
         return None
 
     if summary:
         summary.add_from_ingress(result.findings)
 
+    console.print()
     sorted_findings = sorted(result.findings, key=lambda f: f.risk, reverse=True)
 
     for finding in sorted_findings:
-        risk_label = get_risk_label(finding.risk)
+        risk_str = finding.risk.value if hasattr(finding.risk, 'value') else finding.risk
+        scope = "ALL" if finding.principal == "*" else "SCOPED"
+        hint = finding.reasons[0] if finding.reasons else "Review trust policy"
 
-        if finding.principal == "*":
-            scope = "[bold red]*[/bold red]"
-        else:
-            scope = " "
-
-        console.print(f"  {risk_label} {scope} {finding.principal}")
-
-        details = (
-            f"           Type: [cyan]{finding.principal_type.value}[/cyan] | "
-            f"Assume: [cyan]{finding.assume_type.value}[/cyan]"
-        )
-        if finding.statement_id:
-            details += f" | Sid: {finding.statement_id}"
-        console.print(details)
-
-        for reason in finding.reasons:
-            console.print(f"           [dim]> {reason}[/dim]")
-
-        protections = _get_protection_summary(finding.conditions)
-        if protections:
-            console.print(f"           [green]+ Conditions: {', '.join(protections)}[/green]")
-
+        verbose_lines = []
         if verbose:
+            verbose_lines.append(f"Type: {finding.principal_type.value} | Assume: {finding.assume_type.value}")
+            protections = _get_protection_summary(finding.conditions)
+            if protections:
+                verbose_lines.append(f"+ {', '.join(protections)}")
             remediation = _get_ingress_remediation(finding)
             if remediation:
-                console.print(f"           [cyan]Remediation:[/cyan] [dim]{remediation}[/dim]")
+                verbose_lines.append(f"Fix: {remediation}")
 
+        print_finding(risk_str, scope, finding.principal, hint, verbose_lines, verbose)
         console.print()
 
     return None
@@ -260,7 +305,7 @@ def perform_ingress_check(
 
 def _get_protection_summary(conditions) -> list[str]:
     """Extract list of active protections from conditions."""
-    protections: list[str] = []
+    protections = []
     if conditions.has_external_id:
         protections.append("ExternalId")
     if conditions.has_source_arn:
@@ -282,19 +327,13 @@ def _get_protection_summary(conditions) -> list[str]:
 
 def _get_ingress_remediation(finding) -> str | None:
     """Get remediation hint for ingress finding."""
-    risk_str = finding.risk.value if hasattr(finding.risk, 'value') else finding.risk
-
     if finding.principal == "*":
-        return "Remove wildcard principal or add strict conditions"
-
+        return "Remove wildcard or add strict conditions"
+    risk_str = finding.risk.value if hasattr(finding.risk, 'value') else finding.risk
     if risk_str == "CRITICAL":
-        return "Review trust policy - consider adding ExternalId or source conditions"
-
-    if risk_str == "HIGH":
-        if finding.principal_type.value == "AWS_SERVICE":
-            return "Add SourceArn/SourceAccount conditions for confused deputy protection"
-        return "Consider scoping down with conditions"
-
+        return "Add ExternalId or source conditions"
+    if risk_str == "HIGH" and finding.principal_type.value == "Service":
+        return "Add SourceArn/SourceAccount conditions"
     return None
 
 
@@ -320,85 +359,46 @@ def perform_egress_check(
     console.print("[dim]" + "-" * 60 + "[/dim]")
 
     if result["status"] == "error":
-        console.print(f"[red]Error:[/red] {result['message']}")
+        console.print(f"  [red]Error:[/red] {result['message']}")
         return None
 
     if result["status"] == "not_applicable":
-        console.print(f"[dim]  {result['message']}[/dim]")
+        console.print(f"  [dim]{result['message']}[/dim]")
         return None
 
     result_summary = result["summary"]
 
     if not result_summary or result_summary["total_findings"] == 0:
-        console.print("[dim]  (No dangerous permissions detected)[/dim]")
+        console.print("  [dim]No dangerous permissions detected[/dim]")
         return None
 
     if summary:
         summary.add_from_egress(result)
 
-    # Legend and categories
-    console.print(
-        "  [dim]Scope: [bold red]*[/bold red] = all resources | "
-        "[green]~[/green] = scoped[/dim]"
-    )
-    if result_summary["categories"]:
-        console.print(f"  [dim]Categories:[/dim] [cyan]{', '.join(result_summary['categories'])}[/cyan]")
     console.print()
 
     for finding in result["findings"]:
-        risk_label = get_risk_label(finding["risk"])
-
-        if finding["resource_scope"] == "ALL":
-            scope = "[bold red]*[/bold red]"
-        else:
-            scope = "[green]~[/green]"
-
-        console.print(f"  {risk_label} {scope} {finding['action']}")
-        console.print(f"           [dim]{finding['explanation']}[/dim]")
-
+        verbose_lines = []
         if verbose:
-            console.print(f"           Source: [cyan]{finding['source']}[/cyan]")
-
-            if finding["resource_scope"] == "SCOPED" and finding["resources"]:
-                res = finding["resources"][0]
-                if len(res) > 50:
-                    res = res[:47] + "..."
-                console.print(f"           Resource: [dim]{res}[/dim]")
-
+            verbose_lines.append(f"Source: {finding['source']}")
             if finding["conditions"]:
-                cond_keys = list(finding["conditions"].keys())
-                console.print(f"           [green]+ Conditions: {', '.join(cond_keys)}[/green]")
+                verbose_lines.append(f"+ {', '.join(finding['conditions'].keys())}")
 
-            remediation = _get_egress_remediation(finding)
-            if remediation:
-                console.print(f"           [cyan]Remediation:[/cyan] [dim]{remediation}[/dim]")
-
+        print_finding(
+            finding["risk"],
+            finding["resource_scope"],
+            finding["action"],
+            finding["explanation"],
+            verbose_lines,
+            verbose,
+        )
         console.print()
 
     return None
 
 
-def _get_egress_remediation(finding: dict) -> str | None:
-    """Get remediation hint for egress finding."""
-    action = finding.get("action", "")
-    risk = finding.get("risk", "")
-    scope = finding.get("resource_scope", "")
-
-    if scope == "ALL":
-        if "iam:" in action:
-            return "Scope to specific IAM resources or remove if not needed"
-        if "s3:" in action:
-            return "Scope to specific buckets with Resource constraints"
-        return "Add Resource constraints to limit scope"
-
-    if risk == "CRITICAL":
-        return "Review necessity - this permission enables privilege escalation"
-
-    return None
-
-
 # ─────────────────────────────────────────────────────────────
-# MUTATION Check (Hybrid Style)
+# MUTATION Check
 # ─────────────────────────────────────────────────────────────
 def perform_mutation_check(
         principal_arn: str,
@@ -419,28 +419,19 @@ def perform_mutation_check(
     console.print("[dim]" + "-" * 60 + "[/dim]")
 
     if result.get("status") == "error":
-        console.print(f"[red]Error:[/red] {result.get('message', 'Unknown error')}")
+        console.print(f"  [red]Error:[/red] {result.get('message', 'Unknown error')}")
         return None
 
     if result.get("status") == "not_applicable":
-        console.print(f"[dim]  {result.get('message', 'Not applicable')}[/dim]")
+        console.print(f"  [dim]{result.get('message', 'Not applicable')}[/dim]")
         return None
 
     direct = result.get("direct_escalations", [])
     combos = result.get("combination_escalations", [])
-    potential = result.get("potential_escalations", [])
 
     if not direct and not combos:
         console.print()
         console.print("  [green]✓ No escalation paths detected[/green]")
-
-        if verbose and potential:
-            console.print()
-            console.print("  [dim]Potential (requires additional access):[/dim]")
-            for p in potential[:5]:
-                console.print(
-                    f"    [dim]• {p['action']} -> {p['escalation_path']}[/dim]"
-                )
         console.print()
         return None
 
@@ -449,79 +440,40 @@ def perform_mutation_check(
 
     console.print()
 
-    # Render direct escalations (Hybrid style)
+    # Direct escalations
     for esc in direct:
-        risk = esc["risk"]
-        action = esc["action"]
-        escalation = esc["escalation_path"]
-        description = esc.get("description", "")
-        category = esc.get("category", "")
-        style = RISK_STYLES.get(risk, "white")
+        verbose_lines = []
+        if verbose and esc.get("description"):
+            verbose_lines.append(esc["description"])
 
-        # Risk and action on first line
-        risk_col = f"[{style}]{risk:<8}[/{style}]"
-        console.print(f"  {risk_col}  [bold white]{action}[/bold white]")
-
-        # Escalation path on second line with arrow
-        console.print(f"        [dim]└─>[/dim] {escalation}")
-
-        # Verbose: show description and category
-        if verbose:
-            if description:
-                console.print(f"            [dim]{description}[/dim]")
-            if category:
-                console.print(f"            [dim]Category: {category}[/dim]")
-
+        print_finding(
+            esc["risk"],
+            "ALL",
+            esc["action"],
+            esc["escalation_path"],
+            verbose_lines,
+            verbose,
+        )
         console.print()
 
-    # Render combination escalations (Hybrid style with COMBO tag)
+    # Combo escalations
     for combo in combos:
-        risk = combo["risk"]
         actions = " + ".join(combo["actions"])
-        escalation = combo["escalation_path"]
-        description = combo.get("description", "")
-        style = RISK_STYLES.get(risk, "white")
+        verbose_lines = []
+        if verbose and combo.get("description"):
+            verbose_lines.append(combo["description"])
 
-        # Risk and actions on first line with COMBO tag
-        risk_col = f"[{style}]{risk:<8}[/{style}]"
-        console.print(f"  {risk_col}  [bold white]{actions}[/bold white]  [magenta][COMBO][/magenta]")
-
-        # Escalation path on second line with arrow
-        console.print(f"        [dim]└─>[/dim] {escalation}")
-
-        # Verbose: show description
-        if verbose and description:
-            console.print(f"            [dim]{description}[/dim]")
-
+        print_finding(
+            combo["risk"],
+            "ALL",
+            f"{actions} [magenta][COMBO][/magenta]",
+            combo["escalation_path"],
+            verbose_lines,
+            verbose,
+        )
         console.print()
-
-    # Potential escalations (verbose only)
-    if verbose and potential:
-        console.print("  [dim]Potential (requires additional access):[/dim]")
-        for p in potential[:5]:
-            console.print(
-                f"    [dim]• {p['action']} -> {p['escalation_path']}[/dim]"
-            )
-        if len(potential) > 5:
-            console.print(f"    [dim]... and {len(potential) - 5} more[/dim]")
-        console.print()
-
-    # Verdict line with separator
-    console.print("[dim]" + "-" * 60 + "[/dim]")
-    verdict = result.get("verdict", "")
-    if verdict:
-        overall = result.get("overall_risk", "LOW")
-        style = RISK_STYLES.get(overall, "white")
-        console.print(f"  [bold]Verdict:[/bold] [{style}]{verdict}[/{style}]")
 
     return None
-
-
-def _truncate(text: str, max_len: int) -> str:
-    """Truncate text with ellipsis if too long."""
-    if len(text) <= max_len:
-        return text
-    return text[: max_len - 2] + ".."
 
 
 if __name__ == "__main__":
