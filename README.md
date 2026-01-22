@@ -108,30 +108,7 @@ AWS_PROFILE=prod iamwho analyze <role-arn>
 
 ## Example Output
 
-```
-TARGET: arn:aws:iam::123456789012:role/MyRole
-
-[ EGRESS ] What does this role enable?
-------------------------------------------------------------
-  Scope: * = all resources | ~ = scoped
-
-  CRITICAL  *  iam:CreateUser
-             Allows creation of new IAM users
-
-  CRITICAL  *  iam:AttachUserPolicy
-             Allows attaching policies to users
-
-  HIGH      *  s3:GetObject
-             Read access to S3 objects
-
-  HIGH      ~  lambda:InvokeFunction
-             Invocation scoped to specific functions
-
-============================================================
-  RESULT: 2 CRITICAL | 2 HIGH | 0 MEDIUM | 0 LOW
-  Checks: EGRESS
-============================================================
-```
+![iamwho demo](assets/demo.png)
 
 ---
 
