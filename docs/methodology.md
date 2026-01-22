@@ -4,9 +4,9 @@
 
 ---
 
-## Mental Model
+## Mental model
 
-iamwho models IAM as a directed graph:
+iamwho models AWS IAM as a directed graph:
 
 ```
 [ Principal ]
@@ -28,9 +28,9 @@ Every finding answers one of three questions:
 
 ---
 
-## 1. Principals - Who Can Act
+## 1. Principals - who can act
 
-### Principal Types
+### Principal types
 
 | Type | Example | Risk Notes |
 |:-----|:--------|:-----------|
@@ -43,7 +43,7 @@ Every finding answers one of three questions:
 | AWS Service | `ec2.amazonaws.com` | Confused-deputy risk |
 | Wildcard | `*` | Internet-reachable |
 
-### Key Notes
+### Key notes
 
 - `:root` in trust policies means **any principal in that account**
 - `"*"` and `{ "AWS": "*" }` are equivalent
@@ -51,7 +51,7 @@ Every finding answers one of three questions:
 
 ---
 
-## 2. Assume Paths - How Identity Changes
+## 2. Assume paths - how identity changes
 
 | Path | STS Action | Risk |
 |:-----|:-----------|:-----|
@@ -64,7 +64,7 @@ Every finding answers one of three questions:
 
 ---
 
-## 3. Trust Policies - Ingress Control Surface
+## 3. Trust policies - ingress control surface
 
 For each trust policy statement, iamwho evaluates:
 
@@ -73,7 +73,7 @@ For each trust policy statement, iamwho evaluates:
 3. Condition presence
 4. Condition effectiveness
 
-### Principal Breadth Scale
+### Principal breadth scale
 
 | Scope | Example | Risk |
 |:------|:--------|:-----|
@@ -84,9 +84,9 @@ For each trust policy statement, iamwho evaluates:
 
 ---
 
-## 4. Conditions That Matter
+## 4. Conditions that matter
 
-### Service Principals (Confused Deputy)
+### Service principals (confused deputy)
 
 Expected conditions:
 - `aws:SourceAccount`
@@ -99,7 +99,7 @@ Expected conditions:
 
 iamwho treats missing source conditions as **MEDIUM** by default.
 
-### Cross-Account Trust
+### Cross-account trust
 
 | Scenario | Expected Condition |
 |:---------|:-------------------|
@@ -107,7 +107,7 @@ iamwho treats missing source conditions as **MEDIUM** by default.
 | Internal org | `aws:PrincipalOrgID` |
 | Specific roles | `aws:PrincipalArn` |
 
-### OIDC / Web Identity
+### OIDC / Web identity
 
 Missing subject scoping is **CRITICAL**.
 
@@ -119,7 +119,7 @@ Missing subject scoping is **CRITICAL**.
 
 ---
 
-## 5. Permissions - Egress Surface
+## 5. Permissions - egress surface
 
 iamwho approximates effective permissions using:
 
@@ -137,9 +137,9 @@ Results include **confidence levels** rather than claiming full IAM simulation.
 
 ---
 
-## 6. Dangerous Capabilities - Mutation Primitives
+## 6. Dangerous capabilities - mutation primitives
 
-### Tier 1 - Direct Escalation
+### Tier 1 - direct escalation
 
 ```
 iam:AttachUserPolicy
@@ -152,7 +152,7 @@ iam:CreatePolicyVersion
 iam:SetDefaultPolicyVersion
 ```
 
-### Tier 2 - Indirect Escalation
+### Tier 2 - indirect escalation
 
 ```
 iam:PassRole + lambda:CreateFunction
@@ -160,7 +160,7 @@ iam:PassRole + ec2:RunInstances
 iam:PassRole + cloudformation:CreateStack
 ```
 
-### Tier 3 - Persistence
+### Tier 3 - persistence
 
 ```
 iam:CreateUser
@@ -170,7 +170,7 @@ sts:GetFederationToken
 
 ---
 
-## 7. Guardrails - SCPs & Permission Boundaries
+## 7. Guardrails - SCPs & Permission boundaries
 
 - SCPs and permission boundaries **restrict**, never grant
 - Management account is exempt from SCPs
@@ -180,7 +180,7 @@ Compromise of the management account **bypasses all guardrails**.
 
 ---
 
-## 8. Confidence Levels
+## 8. Confidence levels
 
 | Level | Meaning |
 |:------|:--------|
@@ -190,7 +190,7 @@ Compromise of the management account **bypasses all guardrails**.
 
 ---
 
-## 9. What iamwho Does Not Do
+## 9. What iamwho does not do
 
 - Full IAM simulation
 - CloudTrail analysis

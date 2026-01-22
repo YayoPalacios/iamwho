@@ -4,7 +4,7 @@
 
 ---
 
-## The Three Questions
+## The three questions
 
 | Check | Question |
 |:------|:---------|
@@ -14,7 +14,7 @@
 
 ---
 
-## Risk Levels
+## Risk levels
 
 | Level | Meaning |
 |:------|:--------|
@@ -25,7 +25,7 @@
 
 ---
 
-## Trust Policy Red Flags
+## Trust policy red flags
 
 | Pattern | Risk | Why |
 |:--------|:-----|:----|
@@ -36,9 +36,9 @@
 
 ---
 
-## Dangerous Permissions
+## Dangerous permissions
 
-### Direct Escalation
+### Direct escalation
 
 ```
 iam:AttachUserPolicy
@@ -48,7 +48,7 @@ iam:PutRolePolicy
 iam:CreateAccessKey
 ```
 
-### Indirect Escalation
+### Indirect escalation
 
 ```
 iam:PassRole + lambda:CreateFunction
@@ -65,16 +65,16 @@ sts:GetFederationToken
 
 ---
 
-## Conditions That Protect
+## Conditions that protect
 
-### Cross-Account Trust
+### Cross-account trust
 
 | Scenario | Condition |
 |:---------|:----------|
 | Vendor | `sts:ExternalId` |
 | Org | `aws:PrincipalOrgID` |
 
-### Service Principals
+### Service principals
 
 | Scenario | Condition |
 |:---------|:----------|
@@ -83,7 +83,7 @@ sts:GetFederationToken
 
 ---
 
-## Authorization Rules
+## Authorization rules
 
 | Context | Rule |
 |:--------|:-----|
@@ -92,7 +92,7 @@ sts:GetFederationToken
 
 ---
 
-## Quick Commands
+## Quick commands
 
 ```bash
 iamwho analyze <role-arn>
@@ -104,7 +104,7 @@ AWS_PROFILE=prod iamwho analyze <role-arn>
 
 ---
 
-## What iamwho Doesn't Do
+## What iamwho doesn't do
 
 - Runtime detection
 - CloudTrail analysis

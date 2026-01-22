@@ -26,7 +26,7 @@ Most AWS IAM tools answer a narrow question:
 
 ---
 
-## What iamwho Does
+## What iamwho does
 
 **iamwho** is a static **AWS IAM security analyzer** built to look at IAM the way an attacker would.
 
@@ -95,7 +95,7 @@ AWS_PROFILE=prod iamwho analyze <role-arn>
 
 ---
 
-## Risk Levels
+## Risk levels
 
 | Level | Meaning |
 |:------|:--------|
@@ -106,7 +106,7 @@ AWS_PROFILE=prod iamwho analyze <role-arn>
 
 ---
 
-## Example Output
+## Example output
 
 ![iamwho demo](assets/demo.png)
 
@@ -124,7 +124,7 @@ AWS_PROFILE=prod iamwho analyze <role-arn>
 
 ---
 
-## What iamwho Does Not Do
+## What iamwho does not do
 
 - Runtime detection or CloudTrail analysis
 - Full IAM policy simulation
