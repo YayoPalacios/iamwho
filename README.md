@@ -24,11 +24,22 @@ Most AWS IAM tools answer a narrow question:
 
 **iamwho** exists to reason about **impact**, not just access.
 
+Example: 
+
+A role may appear low risk when viewed in isolation, but if its trust policy
+allows assumption by another role that is reachable from a compromised user,
+the effective blast radius expands significantly.
+
+iamwho surfaces these ingress → egress → mutation chains even when no single
+policy looks dangerous on its own.
+
 ---
 
 ## What iamwho does
 
 **iamwho** is a static **AWS IAM security analyzer** built to look at IAM the way an attacker would.
+
+Static analysis here refers to IAM configuration and trust relationships, not runtime activity or log data.
 
 It helps answer three core questions:
 
@@ -99,10 +110,10 @@ AWS_PROFILE=prod iamwho analyze <role-arn>
 
 | Level | Meaning |
 |:------|:--------|
-| **CRITICAL** | Privilege escalation, IAM mutation, admin-level access |
-| **HIGH** | Broad data access, service control |
-| **MEDIUM** | Enumeration, scoped high-risk actions |
-| **LOW** | Read-only or tightly scoped access |
+| **CRITICAL** | Enables privilege escalation or long-lived persistence |
+| **HIGH** | Expands blast radius across services or roles |
+| **MEDIUM** | Enables discovery, staging, or limited lateral movement |
+| **LOW** | Read-only or tightly scoped access with minimal composition risk |
 
 ---
 

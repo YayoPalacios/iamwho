@@ -18,10 +18,10 @@
 
 | Level | Meaning |
 |:------|:--------|
-| 🔴 **CRITICAL** | Privilege escalation, admin access |
-| 🟠 **HIGH** | Broad data or service control |
-| 🟡 **MEDIUM** | Enumeration, scoped risk |
-| 🟢 **LOW** | Read-only, constrained |
+| 🔴 **CRITICAL** | Privilege escalation or long-lived persistence |
+| 🟠 **HIGH** | Broad service or data blast radius |
+| 🟡 **MEDIUM** | Discovery, staging, or limited lateral movement |
+| 🟢 **LOW** | Read-only or tightly scoped access |
 
 ---
 
@@ -56,6 +56,8 @@ iam:PassRole + ec2:RunInstances
 ```
 
 ### Persistence
+
+Creates long-lived or renewable credentials outside role assumption
 
 ```
 iam:CreateUser
@@ -110,4 +112,4 @@ AWS_PROFILE=prod iamwho analyze <role-arn>
 - CloudTrail analysis
 - Full policy simulation
 
-iamwho = static IAM graph analysis.
+iamwho = static IAM graph analysis focused on reachability.

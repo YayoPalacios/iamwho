@@ -18,6 +18,9 @@ iamwho models AWS IAM as a directed graph:
      └── (mutation) ──▶ [ Escalation / Persistence ]
 ```
 
+In this document, "principal" refers to the actor making the request,
+and "identity" refers to the role or user being assumed or evaluated.
+
 Every finding answers one of three questions:
 
 | Check | Question |
@@ -75,11 +78,11 @@ For each trust policy statement, iamwho evaluates:
 
 ### Principal breadth scale
 
-| Scope | Example | Risk |
-|:------|:--------|:-----|
-| Specific ARN | `role/AppRole` | Low |
-| Account root | `123456789012:root` | Medium |
-| Org-wide | `PrincipalOrgID` | Medium–High |
+| Scope | Example | Risk         |
+|:------|:--------|:-------------|
+| Specific ARN | `role/AppRole` | Low          |
+| Account root | `123456789012:root` | Medium       |
+| Org-wide | `PrincipalOrgID` | High         |
 | Wildcard | `*` | **Critical** |
 
 ---
@@ -176,7 +179,7 @@ sts:GetFederationToken
 - Management account is exempt from SCPs
 - Service-linked roles ignore SCPs
 
-Compromise of the management account **bypasses all guardrails**.
+Compromise of the management account effectively bypasses all organizational guardrails.
 
 ---
 
@@ -196,4 +199,4 @@ Compromise of the management account **bypasses all guardrails**.
 - CloudTrail analysis
 - Runtime or network inspection
 
-**iamwho is static IAM graph analysis** - focused on reachability.
+**iamwho is static IAM graph analysis focused on reachability.**
