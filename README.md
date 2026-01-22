@@ -1,6 +1,7 @@
 # iamwho
 
 > **Static IAM analyzer that shows what happens when one identity is compromised.**
+
 <!-- ![demo](./assets/demo.gif) -->
 
 ---
@@ -9,11 +10,11 @@
 
 Most AWS IAM tools answer a narrow question:
 
-> *“Is this action allowed?”*
+> *"Is this action allowed?"*
 
 **iamwho** focuses on a different failure mode:
 
-> *“If this identity is compromised, what else becomes reachable?”*
+> *"If this identity is compromised, what else becomes reachable?"*
 
 | AWS Tool | Focus | What It Misses |
 |:---------|:------|:---------------|
@@ -31,9 +32,9 @@ Most AWS IAM tools answer a narrow question:
 
 It helps answer three core questions:
 
-- **INGRESS** — Who can assume this role?
-- **EGRESS** — What permissions does the role effectively grant?
-- **MUTATION** — Can those permissions be used to escalate or persist access?
+- **INGRESS** - Who can assume this role?
+- **EGRESS** - What permissions does the role effectively grant?
+- **MUTATION** - Can those permissions be used to escalate or persist access?
 
 This tool is intentionally scoped for **security analysis**, not IAM education or policy authoring.
 
@@ -88,9 +89,9 @@ AWS_PROFILE=prod iamwho analyze <role-arn>
 
 | Check | Question It Answers |
 |:------|:--------------------|
-| `ingress` | Who can become this role? |
-| `egress` | What does this role enable? |
-| `mutation` | Can access escalate or persist? |
+| ingress | Who can become this role? |
+| egress | What does this role enable? |
+| mutation | Can access escalate or persist? |
 
 ---
 
@@ -139,7 +140,7 @@ TARGET: arn:aws:iam::123456789012:role/MyRole
 - [x] INGRESS analysis (trust policies)
 - [x] EGRESS analysis (permissions)
 - [x] MUTATION analysis (escalation paths)
-- [x] `--json` output for CI/CD
+- [x] --json output for CI/CD
 - [ ] Permission boundary analysis
 - [ ] SCP impact detection
 - [ ] Multi-role blast radius analysis
@@ -153,10 +154,13 @@ TARGET: arn:aws:iam::123456789012:role/MyRole
 - Network or secrets analysis
 - Compliance mapping (CIS, SOC2, etc.)
 
-**iamwho** focuses on **static IAM graph analysis** — understanding what becomes reachable when an identity is abused.
+**iamwho** focuses on **static IAM graph analysis** - understanding what becomes reachable when an identity is abused.
 
 ---
-
+### Documentation 
+- [Cheatsheet](docs/cheatsheet.md) — quick reference
+- [Methodology](docs/methodology.md) — how iamwho thinks about IAM
+---
 ## License
 
 MIT
