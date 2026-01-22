@@ -1,40 +1,79 @@
 # iamwho
 
-**iamwho** is a static **AWS IAM security analyzer** that helps you
-understand:
+> **Static IAM analyzer that shows what happens when one identity is compromised.**
+<!-- ![demo](./assets/demo.gif) -->
 
--   **Who can assume a role** (INGRESS -- trust policies)
--   **What that role can do** (EGRESS -- effective permissions)
--   **How privileges could escalate** (MUTATION -- escalation paths)
+---
 
-Built for **security analysis**, not IAM tutorials.
+## Why
 
-------------------------------------------------------------------------
+Most AWS IAM tools answer a narrow question:
+
+> *“Is this action allowed?”*
+
+**iamwho** focuses on a different failure mode:
+
+> *“If this identity is compromised, what else becomes reachable?”*
+
+| AWS Tool | Focus | What It Misses |
+|:---------|:------|:---------------|
+| IAM Access Analyzer | External access, unused permissions | Chained attack paths |
+| Policy Simulator | Point-in-time authorization | Post-compromise reach |
+| Config Rules | Compliance posture | Permission composition |
+
+**iamwho** exists to reason about **impact**, not just access.
+
+---
+
+## What iamwho Does
+
+**iamwho** is a static **AWS IAM security analyzer** built to look at IAM the way an attacker would.
+
+It helps answer three core questions:
+
+- **INGRESS** — Who can assume this role?
+- **EGRESS** — What permissions does the role effectively grant?
+- **MUTATION** — Can those permissions be used to escalate or persist access?
+
+This tool is intentionally scoped for **security analysis**, not IAM education or policy authoring.
+
+---
 
 ## Installation
 
-``` bash
+```bash
+pip install git+https://github.com/YayoPalacios/iamwho.git
+```
+
+For development:
+
+```bash
 git clone https://github.com/YayoPalacios/iamwho.git
 cd iamwho
 pip install -e .
 ```
 
-**Requirements** - Python 3.9+ - boto3 - rich - typer
+**Requirements**
+- Python 3.9+
+- boto3
+- rich
+- typer
 
-------------------------------------------------------------------------
+---
 
 ## Usage
 
-``` bash
+```bash
 # Run all checks
-iamwho analyze arn:aws:iam::123456789012:role/my-role
+iamwho analyze arn:aws:iam::123456789012:role/MyRole
 
 # Run a specific check
 iamwho analyze <role-arn> --check egress
 iamwho analyze <role-arn> -c ingress
 
-# Verbose mode (shows explanations & remediations)
+# Verbose mode (reasoning and remediation hints)
 iamwho analyze <role-arn> --verbose
+iamwho analyze <role-arn> -V
 
 # JSON output (CI/CD friendly)
 iamwho analyze <role-arn> --json
@@ -43,43 +82,15 @@ iamwho analyze <role-arn> --json
 AWS_PROFILE=prod iamwho analyze <role-arn>
 ```
 
-------------------------------------------------------------------------
-
-## Example Output
-
-    TARGET: arn:aws:iam::123456789012:role/my-role
-
-    [ EGRESS ] What can this role do?
-    ------------------------------------------------------------
-      Scope: * = all resources | ~ = scoped
-      Categories: Compute, Data Access, Identity & Access
-
-      CRITICAL * iam:CreateUser
-               Can create new IAM users
-
-      CRITICAL * iam:AttachUserPolicy
-               Can attach policies to users
-
-      HIGH     * s3:GetObject
-               Can read S3 objects
-
-      HIGH     ~ lambda:InvokeFunction
-               Can invoke Lambda functions (scoped to specific resources)
-
-    ============================================================
-      RESULT: 2 CRITICAL | 2 HIGH
-      Checks: EGRESS
-    ============================================================
-
-------------------------------------------------------------------------
+---
 
 ## Checks
 
-| Check | Description |
-|:------|:------------|
-| `ingress` | Who can assume this role? (trust policy analysis) |
-| `egress` | What can this role do? (attached & inline policies) |
-| `mutation` | Can privileges escalate? (escalation path detection) |
+| Check | Question It Answers |
+|:------|:--------------------|
+| `ingress` | Who can become this role? |
+| `egress` | What does this role enable? |
+| `mutation` | Can access escalate or persist? |
 
 ---
 
@@ -87,31 +98,65 @@ AWS_PROFILE=prod iamwho analyze <role-arn>
 
 | Level | Meaning |
 |:------|:--------|
-| **CRITICAL** | Privilege escalation, IAM mutation, admin access |
-| **HIGH** | Broad data access, compute control |
-| **MEDIUM** | Enumeration, scoped dangerous actions |
-| **LOW** | Read-only, limited scope |
+| **CRITICAL** | Privilege escalation, IAM mutation, admin-level access |
+| **HIGH** | Broad data access, service control |
+| **MEDIUM** | Enumeration, scoped high-risk actions |
+| **LOW** | Read-only or tightly scoped access |
 
-------------------------------------------------------------------------
+---
+
+## Example Output
+
+```
+TARGET: arn:aws:iam::123456789012:role/MyRole
+
+[ EGRESS ] What does this role enable?
+------------------------------------------------------------
+  Scope: * = all resources | ~ = scoped
+
+  CRITICAL  *  iam:CreateUser
+             Allows creation of new IAM users
+
+  CRITICAL  *  iam:AttachUserPolicy
+             Allows attaching policies to users
+
+  HIGH      *  s3:GetObject
+             Read access to S3 objects
+
+  HIGH      ~  lambda:InvokeFunction
+             Invocation scoped to specific functions
+
+============================================================
+  RESULT: 2 CRITICAL | 2 HIGH | 0 MEDIUM | 0 LOW
+  Checks: EGRESS
+============================================================
+```
+
+---
 
 ## Roadmap
 
--   INGRESS analysis (trust policies)
--   EGRESS analysis (permissions)
--   MUTATION analysis (escalation paths)
--   `--json` output for CI/CD
--   Permission boundary analysis
--   SCP impact detection
--   Multi-role blast radius analysis
+- [x] INGRESS analysis (trust policies)
+- [x] EGRESS analysis (permissions)
+- [x] MUTATION analysis (escalation paths)
+- [x] `--json` output for CI/CD
+- [ ] Permission boundary analysis
+- [ ] SCP impact detection
+- [ ] Multi-role blast radius analysis
 
-------------------------------------------------------------------------
+---
 
-## What iamwho does *not* do
+## What iamwho Does Not Do
 
--   Runtime detection or CloudTrail analysis
--   Full IAM policy simulation
--   Network or secrets analysis
--   Compliance mapping (CIS, SOC2, etc.)
+- Runtime detection or CloudTrail analysis
+- Full IAM policy simulation
+- Network or secrets analysis
+- Compliance mapping (CIS, SOC2, etc.)
 
-**iamwho** focuses on **static IAM graph analysis** to surface
-high-impact security risk early.
+**iamwho** focuses on **static IAM graph analysis** — understanding what becomes reachable when an identity is abused.
+
+---
+
+## License
+
+MIT
