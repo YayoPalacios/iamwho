@@ -249,4 +249,4 @@ def analyze(
 
 
 def is_valid_arn(arn: str) -> bool:
-    """Basic ARN format validation."""_
+    """Basic ARN format validation."""
