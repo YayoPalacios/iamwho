@@ -181,6 +181,10 @@ def analyze(
         output_json: bool = typer.Option(
             False, "--json", "-j", help="Output results as JSON"
         ),
+        fail_on: str = typer.Option(
+            None, "--fail-on", "-f",
+            help="Exit 1 if findings at this severity or above (critical/high/medium/low)"
+        ),
 ):
     """Analyze the specified IAM principal."""
     if not is_valid_arn(principal_arn):
@@ -218,263 +222,31 @@ def analyze(
     else:
         print_summary(summary)
 
+    # ─────────────────────────────────────────────────────────────
+    # Exit code logic for CI/CD
+    # ─────────────────────────────────────────────────────────────
+    if fail_on:
+        severity_order = ["low", "medium", "high", "critical"]
+        fail_on_lower = fail_on.lower()
+
+        if fail_on_lower not in severity_order:
+            console.print(f"[red]Invalid --fail-on value: {fail_on}[/red]")
+            console.print("[dim]Valid values: critical, high, medium, low[/dim]")
+            raise typer.Exit(code=2)
+
+        highest = summary.highest_risk().lower()
+
+        if highest not in ("none", "info"):
+            threshold_idx = severity_order.index(fail_on_lower)
+            highest_idx = severity_order.index(highest)
+
+            if highest_idx >= threshold_idx:
+                if not output_json:
+                    console.print(f"[red]✗ Failing: found {highest.upper()} (threshold: {fail_on_lower})[/red]")
+                raise typer.Exit(code=1)
+
+    raise typer.Exit(code=0)
+
 
 def is_valid_arn(arn: str) -> bool:
-    """Basic ARN format validation."""
-    return arn.startswith("arn:aws:iam::")
-
-
-# ─────────────────────────────────────────────────────────────
-# Compact finding renderer
-# ─────────────────────────────────────────────────────────────
-def print_finding(
-    risk: str,
-    scope: str,
-    title: str,
-    hint: str,
-    verbose_lines: list[str] | None = None,
-    verbose: bool = False,
-):
-    """Render a single finding: 2 lines default, more if verbose."""
-    risk_label = get_risk_label(risk)
-    scope_char = "[bold red]*[/bold red]" if scope == "ALL" else "[cyan]~[/cyan]"
-
-    console.print(f"  {risk_label} {scope_char} {title}")
-    console.print(f"           [dim]→ {hint}[/dim]")
-
-    if verbose and verbose_lines:
-        for line in verbose_lines:
-            console.print(f"           [dim]{line}[/dim]")
-
-
-# ─────────────────────────────────────────────────────────────
-# INGRESS Check
-# ─────────────────────────────────────────────────────────────
-def perform_ingress_check(
-        principal_arn: str,
-        output_json: bool = False,
-        summary: FindingsSummary | None = None,
-        verbose: bool = False,
-) -> dict | None:
-    """Run the INGRESS check and display results."""
-    from iamwho.checks.ingress import analyze_ingress
-
-    result = analyze_ingress(principal_arn)
-
-    if output_json:
-        return result.to_dict()
-
-    console.print()
-    console.print("[bold cyan][ INGRESS ][/bold cyan] Who can assume this role?")
-    console.print("[dim]" + "-" * 60 + "[/dim]")
-
-    if result.error:
-        console.print(f"  [red]Error:[/red] {result.error}")
-        return None
-
-    if not result.findings:
-        console.print("  [dim]No trust relationships found[/dim]")
-        return None
-
-    if summary:
-        summary.add_from_ingress(result.findings)
-
-    console.print()
-    sorted_findings = sorted(result.findings, key=lambda f: f.risk, reverse=True)
-
-    for finding in sorted_findings:
-        risk_str = finding.risk.value if hasattr(finding.risk, 'value') else finding.risk
-        scope = "ALL" if finding.principal == "*" else "SCOPED"
-        hint = finding.reasons[0] if finding.reasons else "Review trust policy"
-
-        verbose_lines = []
-        if verbose:
-            verbose_lines.append(f"Type: {finding.principal_type.value} | Assume: {finding.assume_type.value}")
-            protections = _get_protection_summary(finding.conditions)
-            if protections:
-                verbose_lines.append(f"+ {', '.join(protections)}")
-            remediation = _get_ingress_remediation(finding)
-            if remediation:
-                verbose_lines.append(f"Fix: {remediation}")
-
-        print_finding(risk_str, scope, finding.principal, hint, verbose_lines, verbose)
-        console.print()
-
-    return None
-
-
-def _get_protection_summary(conditions) -> list[str]:
-    """Extract list of active protections from conditions."""
-    protections = []
-    if conditions.has_external_id:
-        protections.append("ExternalId")
-    if conditions.has_source_arn:
-        protections.append("SourceArn")
-    if conditions.has_source_account:
-        protections.append("SourceAccount")
-    if conditions.has_principal_org_id:
-        protections.append("PrincipalOrgID")
-    if conditions.has_principal_arn:
-        protections.append("PrincipalArn")
-    if conditions.has_oidc_sub_claim:
-        protections.append("OIDC:sub")
-    if conditions.has_oidc_aud_claim:
-        protections.append("OIDC:aud")
-    if conditions.has_saml_aud:
-        protections.append("SAML:aud")
-    return protections
-
-
-def _get_ingress_remediation(finding) -> str | None:
-    """Get remediation hint for ingress finding."""
-    if finding.principal == "*":
-        return "Remove wildcard or add strict conditions"
-    risk_str = finding.risk.value if hasattr(finding.risk, 'value') else finding.risk
-    if risk_str == "CRITICAL":
-        return "Add ExternalId or source conditions"
-    if risk_str == "HIGH" and finding.principal_type.value == "Service":
-        return "Add SourceArn/SourceAccount conditions"
-    return None
-
-
-# ─────────────────────────────────────────────────────────────
-# EGRESS Check
-# ─────────────────────────────────────────────────────────────
-def perform_egress_check(
-        principal_arn: str,
-        output_json: bool = False,
-        summary: FindingsSummary | None = None,
-        verbose: bool = False,
-) -> dict | None:
-    """Run the EGRESS check and display results."""
-    from iamwho.checks.egress import analyze_egress
-
-    result = analyze_egress(principal_arn)
-
-    if output_json:
-        return result
-
-    console.print()
-    console.print("[bold cyan][ EGRESS ][/bold cyan] What can this role do?")
-    console.print("[dim]" + "-" * 60 + "[/dim]")
-
-    if result["status"] == "error":
-        console.print(f"  [red]Error:[/red] {result['message']}")
-        return None
-
-    if result["status"] == "not_applicable":
-        console.print(f"  [dim]{result['message']}[/dim]")
-        return None
-
-    result_summary = result["summary"]
-
-    if not result_summary or result_summary["total_findings"] == 0:
-        console.print("  [dim]No dangerous permissions detected[/dim]")
-        return None
-
-    if summary:
-        summary.add_from_egress(result)
-
-    console.print()
-
-    for finding in result["findings"]:
-        verbose_lines = []
-        if verbose:
-            verbose_lines.append(f"Source: {finding['source']}")
-            if finding["conditions"]:
-                verbose_lines.append(f"+ {', '.join(finding['conditions'].keys())}")
-
-        print_finding(
-            finding["risk"],
-            finding["resource_scope"],
-            finding["action"],
-            finding["explanation"],
-            verbose_lines,
-            verbose,
-        )
-        console.print()
-
-    return None
-
-
-# ─────────────────────────────────────────────────────────────
-# MUTATION Check
-# ─────────────────────────────────────────────────────────────
-def perform_mutation_check(
-        principal_arn: str,
-        output_json: bool = False,
-        summary: FindingsSummary | None = None,
-        verbose: bool = False,
-) -> dict | None:
-    """Run the PRIVILEGE MUTATION check."""
-    from iamwho.checks import privilege_mutation
-
-    result = privilege_mutation.run(principal_arn)
-
-    if output_json:
-        return result
-
-    console.print()
-    console.print("[bold cyan][ MUTATION ][/bold cyan] How could privileges escalate?")
-    console.print("[dim]" + "-" * 60 + "[/dim]")
-
-    if result.get("status") == "error":
-        console.print(f"  [red]Error:[/red] {result.get('message', 'Unknown error')}")
-        return None
-
-    if result.get("status") == "not_applicable":
-        console.print(f"  [dim]{result.get('message', 'Not applicable')}[/dim]")
-        return None
-
-    direct = result.get("direct_escalations", [])
-    combos = result.get("combination_escalations", [])
-
-    if not direct and not combos:
-        console.print()
-        console.print("  [green]✓ No escalation paths detected[/green]")
-        console.print()
-        return None
-
-    if summary:
-        summary.add_from_mutation(result)
-
-    console.print()
-
-    # Direct escalations
-    for esc in direct:
-        verbose_lines = []
-        if verbose and esc.get("description"):
-            verbose_lines.append(esc["description"])
-
-        print_finding(
-            esc["risk"],
-            "ALL",
-            esc["action"],
-            esc["escalation_path"],
-            verbose_lines,
-            verbose,
-        )
-        console.print()
-
-    # Combo escalations
-    for combo in combos:
-        actions = " + ".join(combo["actions"])
-        verbose_lines = []
-        if verbose and combo.get("description"):
-            verbose_lines.append(combo["description"])
-
-        print_finding(
-            combo["risk"],
-            "ALL",
-            f"{actions} [magenta][COMBO][/magenta]",
-            combo["escalation_path"],
-            verbose_lines,
-            verbose,
-        )
-        console.print()
-
-    return None
-
-
-if __name__ == "__main__":
-    app()
+    """Basic ARN format validation."""_

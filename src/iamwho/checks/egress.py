@@ -357,7 +357,13 @@ def _analyze_not_action(
     findings: list[dict[str, Any]] = []
     excluded_patterns = set(not_actions)
     all_dangerous = CRITICAL_ACTIONS | HIGH_RISK_ACTIONS | MEDIUM_RISK_ACTIONS
-
+    # =========================================================================
+    # FIX: NotAction grants specific actions, not the literal "*" wildcard.
+    # A policy with NotAction:["iam:*"] allows everything EXCEPT iam:*,
+    # but that's not the same as allowing Action:"*" (full admin).
+    # We enumerate specific allowed actions below, so exclude "*" from the set.
+    # =========================================================================
+    all_dangerous = all_dangerous - {"*"}
     for action in all_dangerous:
         if _action_matches_any_pattern(action, excluded_patterns):
             continue

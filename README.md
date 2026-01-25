@@ -90,9 +90,45 @@ iamwho analyze <role-arn> -V
 # JSON output (CI/CD friendly)
 iamwho analyze <role-arn> --json
 
+# Fail if findings meet severity threshold (CI/CD gating)
+iamwho analyze <role-arn> --fail-on high
+iamwho analyze <role-arn> --fail-on critical
+
 # Use a specific AWS profile
 AWS_PROFILE=prod iamwho analyze <role-arn>
 ```
+---
+## CI/CD Integration
+
+IAMWho can block PRs that introduce risky IAM roles.
+
+### GitHub Actions
+
+Add `.github/workflows/iam-audit.yml`:
+
+```
+- name: Analyze IAM Role
+  run: |
+    pip install iamwho
+    iamwho analyze $ROLE_ARN --fail-on high
+```
+
+| Flag | Behavior |
+|------|----------|
+| `--fail-on critical` | Fails only on critical findings |
+| `--fail-on high` | Fails on high or critical |
+| `--fail-on medium` | Fails on medium+ |
+| `--fail-on low` | Fails on any finding |
+
+### Required Secrets
+
+| Secret | Description |
+|--------|-------------|
+| `AWS_ACCESS_KEY_ID` | IAM user access key |
+| `AWS_SECRET_ACCESS_KEY` | IAM user secret key |
+
+> The IAM user only needs `iam:GetRole` and `iam:GetRolePolicy` permissions.
+
 
 ---
 
@@ -129,9 +165,13 @@ AWS_PROFILE=prod iamwho analyze <role-arn>
 - [x] EGRESS analysis (permissions)
 - [x] MUTATION analysis (escalation paths)
 - [x] --json output for CI/CD
-- [ ] Permission boundary analysis
-- [ ] SCP impact detection
-- [ ] Multi-role blast radius analysis
+- [x] Exit codes for CI gating (--fail-on)
+- [ ] PyPI package release
+- [ ] GitHub Actions example workflow
+
+### Future
+- User/group principal support
+- Permission boundary analysis
 
 ---
 
