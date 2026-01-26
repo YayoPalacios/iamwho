@@ -376,14 +376,13 @@ def _analyze_not_action(
             via_not_action=True,
         )
         if finding:
-            finding["explanation"] += " (via NotAction - action not excluded)"
             findings.append(finding)
 
     if resource_scope == "ALL":
         findings.append({
             "action": f"NotAction:{','.join(not_actions[:3])}{'...' if len(not_actions) > 3 else ''}",
             "risk": "HIGH",
-            "explanation": f"NotAction grants all actions EXCEPT {len(not_actions)} pattern(s) - review carefully",
+            "explanation": f"Grants all actions EXCEPT {len(not_actions)} pattern(s) - review carefully",
             "resource_scope": resource_scope,
             "resources": resources,
             "conditions": conditions,

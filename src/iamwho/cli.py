@@ -102,7 +102,7 @@ def print_banner():
     banner.append("╚═╝", style="green bold")
 
     console.print(banner)
-    console.print("[dim]AWS IAM Role Security Analyzer[/dim]\n")
+    console.print("[dim]AWS IAM Role Security Analyzer[/dim]")
 
 
 def print_target(role_arn: str):
@@ -117,11 +117,11 @@ def print_target(role_arn: str):
             padding=(0, 2),
         )
     )
-    console.print()
 
 
 def print_section_header(title: str, subtitle: str, color: str):
     """Print a section header."""
+    console.print()
     header = Text()
     header.append("[ ", style="dim")
     header.append(title, style=f"bold {color}")
@@ -130,7 +130,6 @@ def print_section_header(title: str, subtitle: str, color: str):
 
     console.print(header)
     console.print("─" * 60, style="dim")
-    console.print()
 
 
 def print_finding(finding: dict):
@@ -176,8 +175,6 @@ def print_finding(finding: dict):
         desc_text.append(str(description), style="italic dim")
         console.print(desc_text)
 
-    console.print()
-
 
 def print_no_findings(message: str = "No findings detected"):
     """Print a no-findings message."""
@@ -185,7 +182,6 @@ def print_no_findings(message: str = "No findings detected"):
     text.append("  + ", style="green bold")
     text.append(message, style="green")
     console.print(text)
-    console.print()
 
 
 def print_summary(ingress_findings: list, egress_findings: list, mutation_findings: list):

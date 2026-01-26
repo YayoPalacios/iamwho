@@ -2,7 +2,7 @@
 
 > **Static IAM analyzer that shows what happens when one identity is compromised.**
 
-<!-- ![demo](./assets/demo.gif) -->
+![demo](./assets/demo.gif)
 
 ---
 
@@ -10,11 +10,11 @@
 
 Most AWS IAM tools answer a narrow question:
 
-> *"Is this action allowed?"*
+> *Is this action allowed?*
 
 **iamwho** focuses on a different failure mode:
 
-> *"If this identity is compromised, what else becomes reachable?"*
+> *If this identity is compromised, what else becomes reachable?*
 
 | AWS Tool | Focus | What It Misses |
 |:---------|:------|:---------------|
