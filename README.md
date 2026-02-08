@@ -1,5 +1,5 @@
 # iamwho
-
+[![PyPI](https://img.shields.io/pypi/v/iamwho)](https://pypi.org/project/iamwho/)
 > **Static IAM analyzer that shows what happens when one identity is compromised.**
 
 ![demo](./assets/demo.gif)
@@ -54,7 +54,7 @@ This tool is intentionally scoped for **security analysis**, not IAM education o
 ## Installation
 
 ```bash
-pip install git+https://github.com/YayoPalacios/iamwho.git
+pip install iamwho
 ```
 
 For development:
@@ -166,7 +166,7 @@ Add `.github/workflows/iam-audit.yml`:
 - [x] MUTATION analysis (escalation paths)
 - [x] --json output for CI/CD
 - [x] Exit codes for CI gating (--fail-on)
-- [ ] PyPI package release
+- [x] PyPI package release
 - [ ] GitHub Actions example workflow
 
 ### Future
