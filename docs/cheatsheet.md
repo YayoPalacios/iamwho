@@ -4,7 +4,7 @@
 
 ---
 
-## The three questions
+## The Three Questions
 
 | Check | Question |
 |:------|:---------|
@@ -14,7 +14,7 @@
 
 ---
 
-## Risk levels
+## Risk Levels
 
 | Level | Meaning |
 |:------|:--------|
@@ -25,7 +25,7 @@
 
 ---
 
-## Trust policy red flags
+## Trust Policy Red Flags
 
 | Pattern | Risk | Why |
 |:--------|:-----|:----|
@@ -36,9 +36,9 @@
 
 ---
 
-## Dangerous permissions
+## Dangerous Permissions
 
-### Direct escalation
+### Direct Escalation
 
 ```
 iam:AttachUserPolicy
@@ -48,7 +48,7 @@ iam:PutRolePolicy
 iam:CreateAccessKey
 ```
 
-### Indirect escalation
+### Indirect Escalation
 
 ```
 iam:PassRole + lambda:CreateFunction
@@ -57,7 +57,7 @@ iam:PassRole + ec2:RunInstances
 
 ### Persistence
 
-Creates long-lived or renewable credentials outside role assumption
+Creates long-lived or renewable credentials outside role assumption.
 
 ```
 iam:CreateUser
@@ -67,16 +67,16 @@ sts:GetFederationToken
 
 ---
 
-## Conditions that protect
+## Conditions That Protect
 
-### Cross-account trust
+### Cross-Account Trust
 
 | Scenario | Condition |
 |:---------|:----------|
 | Vendor | `sts:ExternalId` |
 | Org | `aws:PrincipalOrgID` |
 
-### Service principals
+### Service Principals
 
 | Scenario | Condition |
 |:---------|:----------|
@@ -85,7 +85,7 @@ sts:GetFederationToken
 
 ---
 
-## Authorization rules
+## Authorization Rules
 
 | Context | Rule |
 |:--------|:-----|
@@ -94,7 +94,7 @@ sts:GetFederationToken
 
 ---
 
-## Quick commands
+## Quick Commands
 
 ```bash
 iamwho analyze <role-arn>
@@ -106,10 +106,10 @@ AWS_PROFILE=prod iamwho analyze <role-arn>
 
 ---
 
-## What iamwho doesn't do
+## What iamwho Does Not Do
 
 - Runtime detection
 - CloudTrail analysis
 - Full policy simulation
 
-iamwho = static IAM graph analysis focused on reachability.
+**iamwho** = static IAM graph analysis focused on reachability.

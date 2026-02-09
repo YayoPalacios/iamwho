@@ -1,10 +1,10 @@
-# iamwho - IAM Security Analysis Methodology
+# iamwho – IAM Security Analysis Methodology
 
 > How **iamwho** reasons about AWS IAM from an attacker’s perspective.
 
 ---
 
-## Mental model
+## Mental Model
 
 iamwho models AWS IAM as a directed graph:
 
@@ -18,8 +18,8 @@ iamwho models AWS IAM as a directed graph:
      └── (mutation) ──▶ [ Escalation / Persistence ]
 ```
 
-In this document, "principal" refers to the actor making the request,
-and "identity" refers to the role or user being assumed or evaluated.
+In this document, *principal* refers to the actor making the request,
+and *identity* refers to the role or user being assumed or evaluated.
 
 Every finding answers one of three questions:
 
@@ -31,9 +31,9 @@ Every finding answers one of three questions:
 
 ---
 
-## 1. Principals - who can act
+## 1. Principals – Who Can Act
 
-### Principal types
+### Principal Types
 
 | Type | Example | Risk Notes |
 |:-----|:--------|:-----------|
@@ -46,15 +46,15 @@ Every finding answers one of three questions:
 | AWS Service | `ec2.amazonaws.com` | Confused-deputy risk |
 | Wildcard | `*` | Internet-reachable |
 
-### Key notes
+### Key Notes
 
 - `:root` in trust policies means **any principal in that account**
 - `"*"` and `{ "AWS": "*" }` are equivalent
-- `federated-user/*` is **not** SAML/OIDC - it uses `GetFederationToken`
+- `federated-user/*` is **not** SAML/OIDC – it uses `GetFederationToken`
 
 ---
 
-## 2. Assume paths - how identity changes
+## 2. Assume Paths – How Identity Changes
 
 | Path | STS Action | Risk |
 |:-----|:-----------|:-----|
@@ -67,29 +67,29 @@ Every finding answers one of three questions:
 
 ---
 
-## 3. Trust policies - ingress control surface
+## 3. Trust Policies – Ingress Control Surface
 
 For each trust policy statement, iamwho evaluates:
 
-1. Principal breadth
-2. Assume path
-3. Condition presence
-4. Condition effectiveness
+1. Principal breadth  
+2. Assume path  
+3. Condition presence  
+4. Condition effectiveness  
 
-### Principal breadth scale
+### Principal Breadth Scale
 
-| Scope | Example | Risk         |
-|:------|:--------|:-------------|
-| Specific ARN | `role/AppRole` | Low          |
-| Account root | `123456789012:root` | Medium       |
-| Org-wide | `PrincipalOrgID` | High         |
+| Scope | Example | Risk |
+|:------|:--------|:-----|
+| Specific ARN | `role/AppRole` | Low |
+| Account root | `123456789012:root` | Medium |
+| Org-wide | `PrincipalOrgID` | High |
 | Wildcard | `*` | **Critical** |
 
 ---
 
-## 4. Conditions that matter
+## 4. Conditions That Matter
 
-### Service principals (confused deputy)
+### Service Principals (Confused Deputy)
 
 Expected conditions:
 - `aws:SourceAccount`
@@ -102,7 +102,7 @@ Expected conditions:
 
 iamwho treats missing source conditions as **MEDIUM** by default.
 
-### Cross-account trust
+### Cross-Account Trust
 
 | Scenario | Expected Condition |
 |:---------|:-------------------|
@@ -110,26 +110,26 @@ iamwho treats missing source conditions as **MEDIUM** by default.
 | Internal org | `aws:PrincipalOrgID` |
 | Specific roles | `aws:PrincipalArn` |
 
-### OIDC / Web identity
+### OIDC / Web Identity
 
 Missing subject scoping is **CRITICAL**.
 
 | Provider | Required Conditions |
-|:---------|:--------------------|
+|:---------|:-------------------|
 | GitHub Actions | `aud` + constrained `sub` |
 | EKS | Cluster-scoped `sub` |
 | Cognito | `sub`, `aud` |
 
 ---
 
-## 5. Permissions - egress surface
+## 5. Permissions – Egress Surface
 
 iamwho approximates effective permissions using:
 
-1. Identity policies
-2. Permission boundaries
-3. SCPs (if visible)
-4. Session policies (restrictive only)
+1. Identity policies  
+2. Permission boundaries  
+3. SCPs (if visible)  
+4. Session policies (restrictive only)  
 
 | Context | Rule |
 |:--------|:-----|
@@ -140,9 +140,9 @@ Results include **confidence levels** rather than claiming full IAM simulation.
 
 ---
 
-## 6. Dangerous capabilities - mutation primitives
+## 6. Dangerous Capabilities – Mutation Primitives
 
-### Tier 1 - direct escalation
+### Tier 1 – Direct Escalation
 
 ```
 iam:AttachUserPolicy
@@ -155,7 +155,7 @@ iam:CreatePolicyVersion
 iam:SetDefaultPolicyVersion
 ```
 
-### Tier 2 - indirect escalation
+### Tier 2 – Indirect Escalation
 
 ```
 iam:PassRole + lambda:CreateFunction
@@ -163,7 +163,7 @@ iam:PassRole + ec2:RunInstances
 iam:PassRole + cloudformation:CreateStack
 ```
 
-### Tier 3 - persistence
+### Tier 3 – Persistence
 
 ```
 iam:CreateUser
@@ -173,7 +173,7 @@ sts:GetFederationToken
 
 ---
 
-## 7. Guardrails - SCPs & Permission boundaries
+## 7. Guardrails – SCPs & Permission Boundaries
 
 - SCPs and permission boundaries **restrict**, never grant
 - Management account is exempt from SCPs
@@ -183,7 +183,7 @@ Compromise of the management account effectively bypasses all organizational gua
 
 ---
 
-## 8. Confidence levels
+## 8. Confidence Levels
 
 | Level | Meaning |
 |:------|:--------|
@@ -193,10 +193,10 @@ Compromise of the management account effectively bypasses all organizational gua
 
 ---
 
-## 9. What iamwho does not do
+## 9. What iamwho Does Not Do
 
 - Full IAM simulation
 - CloudTrail analysis
 - Runtime or network inspection
 
-**iamwho is static IAM graph analysis focused on reachability.**
+**iamwho** is static IAM graph analysis focused on reachability.

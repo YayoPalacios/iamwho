@@ -24,7 +24,7 @@ Most AWS IAM tools answer a narrow question:
 
 **iamwho** exists to reason about **impact**, not just access.
 
-Example: 
+Example:
 
 A role may appear low risk when viewed in isolation, but if its trust policy
 allows assumption by another role that is reachable from a compromised user,
@@ -35,7 +35,7 @@ policy looks dangerous on its own.
 
 ---
 
-## What iamwho does
+## What iamwho Does
 
 **iamwho** is a static **AWS IAM security analyzer** built to look at IAM the way an attacker would.
 
@@ -43,17 +43,22 @@ Static analysis here refers to IAM configuration and trust relationships, not ru
 
 It helps answer three core questions:
 
-- **INGRESS** - Who can assume this role?
-- **EGRESS** - What permissions does the role effectively grant?
-- **MUTATION** - Can those permissions be used to escalate or persist access?
+- **INGRESS** – Who can assume this role?
+- **EGRESS** – What permissions does the role effectively grant?
+- **MUTATION** – Can those permissions be used to escalate or persist access?
 
 This tool is intentionally scoped for **security analysis**, not IAM education or policy authoring.
 
 ---
+
 ## Installation
+
 ```bash
 pip install iamwho
 ```
+
+---
+
 ## Quick Start
 
 ```bash
@@ -68,7 +73,10 @@ cd iamwho
 pip install -e .
 ```
 
-**Requirements**
+---
+
+## Requirements
+
 - Python 3.9+
 - boto3
 - rich
@@ -100,10 +108,12 @@ iamwho analyze <role-arn> --fail-on critical
 # Use a specific AWS profile
 AWS_PROFILE=prod iamwho analyze <role-arn>
 ```
+
 ---
+
 ## CI/CD Integration
 
-IAMWho can block PRs that introduce risky IAM roles.
+iamwho can block PRs that introduce risky IAM roles.
 
 ### GitHub Actions
 
@@ -132,7 +142,6 @@ Add `.github/workflows/iam-audit.yml`:
 
 > The IAM user only needs `iam:GetRole` and `iam:GetRolePolicy` permissions.
 
-
 ---
 
 ## Checks
@@ -145,7 +154,7 @@ Add `.github/workflows/iam-audit.yml`:
 
 ---
 
-## Risk levels
+## Risk Levels
 
 | Level | Meaning |
 |:------|:--------|
@@ -165,28 +174,31 @@ Add `.github/workflows/iam-audit.yml`:
 - [x] Exit codes for CI gating (--fail-on)
 - [x] PyPI package release
 
-
 ### Future
+
 - User/group principal support
 - Permission boundary analysis
 
 ---
 
-## What iamwho does not do
+## What iamwho Does Not Do
 
 - Runtime detection or CloudTrail analysis
 - Full IAM policy simulation
 - Network or secrets analysis
 - Compliance mapping (CIS, SOC2, etc.)
 
-**iamwho** focuses on **static IAM graph analysis** - understanding what becomes reachable when an identity is abused.
+**iamwho** focuses on **static IAM graph analysis** — understanding what becomes reachable when an identity is abused.
 
 ---
-## Documentation 
+
+## Documentation
 
 - [Cheatsheet](docs/cheatsheet.md) — quick reference
 - [Methodology](docs/methodology.md) — how iamwho thinks about IAM
+
 ---
+
 ## License
 
 MIT
