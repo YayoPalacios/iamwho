@@ -1,53 +1,74 @@
 # iamwho
 [![PyPI](https://img.shields.io/pypi/v/iamwho)](https://pypi.org/project/iamwho/)
-> **Static IAM analyzer that shows what happens when one identity is compromised.**
 
-![demo](./assets/demo.gif)
+> **Static AWS IAM analyzer focused on post-compromise blast radius.**
+
+![iamwho demo](./assets/demo.gif)
+
+---
+
+## How iamwho Thinks About Risk
+
+The diagram below illustrates the difference between **access analysis** and **impact analysis**.
+
+**Access analysis** asks whether an action is allowed.
+**Impact analysis** asks what *else* becomes reachable once an identity is compromised.
+
+![Impact vs Access analysis](./assets/diagram.png)
+
+*iamwho* walks this graph to expose escalation paths and blast-radius expansion
+that are invisible when policies are evaluated in isolation.
 
 ---
 
 ## Why
 
-Most AWS IAM tools answer a narrow question:
+Most AWS IAM tools answer a narrow, defensive question:
 
 > *Is this action allowed?*
 
-**iamwho** focuses on a different failure mode:
+That question matters — but it’s incomplete.
+
+**iamwho** is built around a different failure mode:
 
 > *If this identity is compromised, what else becomes reachable?*
 
-| AWS Tool | Focus | What It Misses |
-|:---------|:------|:---------------|
-| IAM Access Analyzer | External access, unused permissions | Chained attack paths |
+Attackers don’t think in terms of individual policies.
+They think in **trust chains**, **permission composition**, and **what they can become next**.
+
+| AWS Tool | Primary Focus | Blind Spot |
+|:---------|:--------------|:-----------|
+| IAM Access Analyzer | External access, unused permissions | Chained trust & role hopping |
 | Policy Simulator | Point-in-time authorization | Post-compromise reach |
-| Config Rules | Compliance posture | Permission composition |
+| Config Rules | Compliance posture | Effective permission composition |
 
-**iamwho** exists to reason about **impact**, not just access.
+IAM risk rarely lives in a single policy.
 
-Example:
+A role can appear low risk when reviewed in isolation, yet become dangerous when:
+- it can be assumed by another reachable identity
+- it grants permissions that enable mutation
+- those permissions unlock additional roles or services
 
-A role may appear low risk when viewed in isolation, but if its trust policy
-allows assumption by another role that is reachable from a compromised user,
-the effective blast radius expands significantly.
-
-iamwho surfaces these ingress → egress → mutation chains even when no single
-policy looks dangerous on its own.
+**iamwho** analyzes these relationships as a graph — surfacing **ingress → egress → mutation**
+paths that expand blast radius even when no single policy looks suspicious.
 
 ---
 
 ## What iamwho Does
 
-**iamwho** is a static **AWS IAM security analyzer** built to look at IAM the way an attacker would.
+**iamwho** is a static **AWS IAM security analyzer** that models IAM the way an attacker would.
 
-Static analysis here refers to IAM configuration and trust relationships, not runtime activity or log data.
+Static analysis here refers to **IAM configuration and trust relationships** —
+not runtime activity, logs, or CloudTrail events.
 
 It helps answer three core questions:
 
-- **INGRESS** – Who can assume this role?
-- **EGRESS** – What permissions does the role effectively grant?
-- **MUTATION** – Can those permissions be used to escalate or persist access?
+- **INGRESS** — Who can become this identity?
+- **EGRESS** — What does this identity effectively enable?
+- **MUTATION** — Can that access be escalated or persisted?
 
-This tool is intentionally scoped for **security analysis**, not IAM education or policy authoring.
+This tool is intentionally scoped for **security impact analysis**, not policy authoring,
+education, or compliance reporting.
 
 ---
 
@@ -109,15 +130,45 @@ iamwho analyze <role-arn> --fail-on critical
 AWS_PROFILE=prod iamwho analyze <role-arn>
 ```
 
+
+### Example Output
+
+Running with `--verbose` provides reasoning and potential escalation paths:
+
+```text
+[HIGH] Role allows iam:PassRole to EC2
+  └─ This enables creation of EC2 instances with elevated roles
+     which may grant access to additional AWS services.
+
+[CRITICAL] sts:AssumeRole chain detected
+  └─ Compromised role can assume AdminRole via trust relationship
+```
+
+Using `--json` produces structured output suitable for CI/CD and reporting:
+
+```json
+{
+  "role": "MyRole",
+  "findings": [
+    {
+      "check": "mutation",
+      "severity": "CRITICAL",
+      "description": "Privilege escalation via sts:AssumeRole",
+      "path": ["MyRole", "AdminRole"]
+    }
+  ]
+}
+```
+
 ---
 
 ## CI/CD Integration
 
-iamwho can block PRs that introduce risky IAM roles.
+**iamwho** can block pull requests that introduce risky IAM roles.
 
 ### GitHub Actions
 
-Add `.github/workflows/iam-audit.yml`:
+Create `.github/workflows/iam-audit.yml`:
 
 ```yaml
 - name: Analyze IAM Role
@@ -126,11 +177,13 @@ Add `.github/workflows/iam-audit.yml`:
     iamwho analyze $ROLE_ARN --fail-on high
 ```
 
+### Severity Gating
+
 | Flag | Behavior |
 |------|----------|
 | `--fail-on critical` | Fails only on critical findings |
 | `--fail-on high` | Fails on high or critical |
-| `--fail-on medium` | Fails on medium+ |
+| `--fail-on medium` | Fails on medium and above |
 | `--fail-on low` | Fails on any finding |
 
 ### Required Secrets
@@ -140,7 +193,7 @@ Add `.github/workflows/iam-audit.yml`:
 | `AWS_ACCESS_KEY_ID` | IAM user access key |
 | `AWS_SECRET_ACCESS_KEY` | IAM user secret key |
 
-> The IAM user only needs `iam:GetRole` and `iam:GetRolePolicy` permissions.
+> The IAM principal only requires `iam:GetRole` and `iam:GetRolePolicy`.
 
 ---
 
@@ -170,14 +223,27 @@ Add `.github/workflows/iam-audit.yml`:
 - [x] INGRESS analysis (trust policies)
 - [x] EGRESS analysis (permissions)
 - [x] MUTATION analysis (escalation paths)
-- [x] --json output for CI/CD
-- [x] Exit codes for CI gating (--fail-on)
+- [x] JSON output for CI/CD
+- [x] Exit codes for CI gating (`--fail-on`)
 - [x] PyPI package release
 
-### Future
+### Planned
 
-- User/group principal support
+- User and group principal support
 - Permission boundary analysis
+
+---
+
+## Contributing
+
+iamwho is currently maintained as a personal security research project.
+
+If you find issues, edge cases, or gaps in analysis, feel free to open an issue.
+Suggestions and small pull requests are welcome as long as they fit the
+security-focused scope of the project.
+
+This tool is intentionally opinionated and not designed to cover all IAM use
+cases.
 
 ---
 
@@ -188,14 +254,15 @@ Add `.github/workflows/iam-audit.yml`:
 - Network or secrets analysis
 - Compliance mapping (CIS, SOC2, etc.)
 
-**iamwho** focuses on **static IAM graph analysis** — understanding what becomes reachable when an identity is abused.
+**iamwho** focuses strictly on **static IAM graph analysis** —
+understanding what becomes reachable when an identity is abused.
 
 ---
 
 ## Documentation
 
 - [Cheatsheet](docs/cheatsheet.md) — quick reference
-- [Methodology](docs/methodology.md) — how iamwho thinks about IAM
+- [Methodology](docs/methodology.md) — how iamwho reasons about IAM risk
 
 ---
 
