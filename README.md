@@ -50,11 +50,14 @@ It helps answer three core questions:
 This tool is intentionally scoped for **security analysis**, not IAM education or policy authoring.
 
 ---
-
 ## Installation
-
 ```bash
 pip install iamwho
+```
+## Quick Start
+
+```bash
+pip install iamwho && iamwho analyze arn:aws:iam::123456789012:role/MyRole
 ```
 
 For development:
@@ -106,7 +109,7 @@ IAMWho can block PRs that introduce risky IAM roles.
 
 Add `.github/workflows/iam-audit.yml`:
 
-```
+```yaml
 - name: Analyze IAM Role
   run: |
     pip install iamwho
@@ -153,12 +156,6 @@ Add `.github/workflows/iam-audit.yml`:
 
 ---
 
-## Example output
-
-![iamwho demo](assets/demo.png)
-
----
-
 ## Roadmap
 
 - [x] INGRESS analysis (trust policies)
@@ -167,7 +164,7 @@ Add `.github/workflows/iam-audit.yml`:
 - [x] --json output for CI/CD
 - [x] Exit codes for CI gating (--fail-on)
 - [x] PyPI package release
-- [ ] GitHub Actions example workflow
+
 
 ### Future
 - User/group principal support
@@ -185,7 +182,8 @@ Add `.github/workflows/iam-audit.yml`:
 **iamwho** focuses on **static IAM graph analysis** - understanding what becomes reachable when an identity is abused.
 
 ---
-### Documentation 
+## Documentation 
+
 - [Cheatsheet](docs/cheatsheet.md) — quick reference
 - [Methodology](docs/methodology.md) — how iamwho thinks about IAM
 ---
