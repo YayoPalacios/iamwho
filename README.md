@@ -14,7 +14,7 @@ The diagram below illustrates the difference between **access analysis** and **i
 **Access analysis** asks whether an action is allowed.
 **Impact analysis** asks what *else* becomes reachable once an identity is compromised.
 
-![Impact vs Access analysis](./assets/diagram.png)
+![Impact vs Access analysis](assets/diagram.png)
 
 *iamwho* walks this graph to expose escalation paths and blast-radius expansion
 that are invisible when policies are evaluated in isolation.
