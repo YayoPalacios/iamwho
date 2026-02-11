@@ -117,7 +117,7 @@ iamwho analyze <role-arn> -c ingress
 
 # Verbose mode (reasoning and remediation hints)
 iamwho analyze <role-arn> --verbose
-iamwho analyze <role-arn> -V
+iamwho analyze <role-arn> -v
 
 # JSON output (CI/CD friendly)
 iamwho analyze <role-arn> --json

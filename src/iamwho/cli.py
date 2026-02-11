@@ -1,4 +1,3 @@
-# src/iamwho/cli.py
 """IAMWho CLI - AWS IAM Role Security Analyzer"""
 
 import json
@@ -80,6 +79,7 @@ def get_section_severity(findings: list) -> str:
 def print_banner():
     """Print the IAMWho banner."""
     banner = Text()
+
     banner.append("╦", style="cyan bold")
     banner.append("╔═╗", style="blue bold")
     banner.append("╔╦╗", style="magenta bold")
@@ -123,12 +123,14 @@ def print_section_header(title: str, subtitle: str, color: str):
     """Print a section header."""
     console.print()
     header = Text()
+
     header.append("[ ", style="dim")
     header.append(title, style=f"bold {color}")
     header.append(" ] ", style="dim")
     header.append(subtitle, style="italic dim")
 
     console.print(header)
+    # Reduced vertical spacing: no leading newline before the divider
     console.print("─" * 60, style="dim")
 
 
@@ -185,7 +187,7 @@ def print_no_findings(message: str = "No findings detected"):
 
 
 def print_summary(ingress_findings: list, egress_findings: list, mutation_findings: list):
-    """Print the summary table."""
+    """Print the summary table with better spacing and organization."""
     console.print()
     console.print("━" * 60, style="bold")
 
@@ -202,7 +204,7 @@ def print_summary(ingress_findings: list, egress_findings: list, mutation_findin
 
         line = Text()
         line.append(f"  {name.ljust(14)}", style=f"bold {color}")
-        line.append(f"{count} findings".ljust(18), style="white")
+        line.append(f"{count:>5} findings".ljust(18), style="white")
         line.append(f" {max_sev} ", style=sev_style)
         console.print(line)
 
@@ -373,15 +375,13 @@ def validate_fail_on(value: Optional[str]) -> Optional[str]:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Exit Code Logic
 # ═══════════════════════════════════════════════════════════════════════════════
-def calculate_exit_code(
-    all_findings: list[dict], fail_on: Optional[str]
-) -> int:
+def calculate_exit_code(all_findings: list[dict], fail_on: Optional[str]) -> int:
     """Calculate exit code based on findings and --fail-on threshold."""
     if not fail_on:
         # Default behavior: exit 2 for critical, 1 for high
         if any(f.get("severity") == "CRITICAL" for f in all_findings):
             return 2
-        elif any(f.get("severity") == "HIGH" for f in all_findings):
+        if any(f.get("severity") == "HIGH" for f in all_findings):
             return 1
         return 0
 
@@ -389,8 +389,7 @@ def calculate_exit_code(
     counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
     for f in all_findings:
         sev = f.get("severity", "LOW").upper()
-        if sev in counts:
-            counts[sev] += 1
+        counts[sev] = counts.get(sev, 0) + 1
 
     fail_on = fail_on.lower()
 
