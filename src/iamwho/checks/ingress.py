@@ -15,10 +15,10 @@ from iamwho.models import (
     TrustFinding,
 )
 
-
 # =============================================================================
 # MAIN ANALYSIS
 # =============================================================================
+
 
 def analyze_ingress(role_arn: str) -> IngressResult:
     """Analyze a role's trust policy for security issues."""
@@ -57,6 +57,7 @@ def analyze_ingress(role_arn: str) -> IngressResult:
 # =============================================================================
 # HELPERS
 # =============================================================================
+
 
 def _extract_role_name(role_arn: str) -> str | None:
     """Extract role name from ARN."""
@@ -105,15 +106,17 @@ def _analyze_statement(statement: dict[str, Any]) -> list[TrustFinding]:
             conditions=conditions,
         )
 
-        findings.append(TrustFinding(
-            statement_id=statement_id,
-            principal=principal,
-            principal_type=principal_type,
-            assume_type=assume_type,
-            risk=risk,
-            conditions=conditions,
-            reasons=reasons,
-        ))
+        findings.append(
+            TrustFinding(
+                statement_id=statement_id,
+                principal=principal,
+                principal_type=principal_type,
+                assume_type=assume_type,
+                risk=risk,
+                conditions=conditions,
+                reasons=reasons,
+            )
+        )
 
     return findings
 
@@ -335,7 +338,6 @@ def format_ingress(result: IngressResult, verbose: bool = False) -> None:
     """Render ingress analysis to console."""
     from rich.console import Console
     from rich.markup import escape
-    from rich.text import Text
 
     console = Console()
 

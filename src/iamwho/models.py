@@ -1,4 +1,5 @@
 """Data models for iamwho findings."""
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -6,6 +7,7 @@ from typing import Any
 
 class RiskLevel(Enum):
     """Risk classification levels."""
+
     CRITICAL = "CRITICAL"
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"
@@ -13,13 +15,19 @@ class RiskLevel(Enum):
     INFO = "INFO"
 
     def __lt__(self, other: "RiskLevel") -> bool:
-        order = [RiskLevel.INFO, RiskLevel.LOW, RiskLevel.MEDIUM,
-                 RiskLevel.HIGH, RiskLevel.CRITICAL]
+        order = [
+            RiskLevel.INFO,
+            RiskLevel.LOW,
+            RiskLevel.MEDIUM,
+            RiskLevel.HIGH,
+            RiskLevel.CRITICAL,
+        ]
         return order.index(self) < order.index(other)
 
 
 class AssumeType(Enum):
     """STS assume action classification."""
+
     ASSUME_ROLE = "AssumeRole"
     ASSUME_ROLE_SAML = "AssumeRoleWithSAML"
     ASSUME_ROLE_OIDC = "AssumeRoleWithWebIdentity"
@@ -28,6 +36,7 @@ class AssumeType(Enum):
 
 class PrincipalType(Enum):
     """Trust policy principal classification."""
+
     AWS_ACCOUNT = "AWSAccount"
     AWS_ROLE = "AWSRole"
     AWS_USER = "AWSUser"
@@ -42,6 +51,7 @@ class PrincipalType(Enum):
 @dataclass
 class ConditionAnalysis:
     """Analysis of a statement's conditions."""
+
     has_external_id: bool = False
     has_source_arn: bool = False
     has_source_account: bool = False
@@ -71,6 +81,7 @@ class ConditionAnalysis:
 @dataclass
 class TrustFinding:
     """A single finding from trust policy analysis."""
+
     statement_id: str | None
     principal: str
     principal_type: PrincipalType
@@ -99,6 +110,7 @@ class TrustFinding:
 @dataclass
 class IngressResult:
     """Complete INGRESS analysis result."""
+
     role_arn: str
     findings: list[TrustFinding] = field(default_factory=list)
     highest_risk: RiskLevel = RiskLevel.INFO

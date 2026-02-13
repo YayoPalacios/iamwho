@@ -14,7 +14,6 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 
-
 # =============================================================================
 # DANGEROUS ACTION PATTERNS
 # =============================================================================
@@ -106,6 +105,7 @@ ACTION_CATEGORIES: dict[str, list[str]] = {
 # MAIN ANALYSIS FUNCTION
 # =============================================================================
 
+
 def analyze_egress(role_arn: str) -> dict[str, Any]:
     """Analyze a role's permissions for security risks."""
     if ":role/" not in role_arn:
@@ -164,6 +164,7 @@ def analyze_egress(role_arn: str) -> dict[str, Any]:
 # POLICY FETCHING
 # =============================================================================
 
+
 def _extract_role_name(role_arn: str) -> str | None:
     """Extract role name from ARN."""
     if ":role/" not in role_arn:
@@ -183,12 +184,16 @@ def _fetch_role_policies(role_name: str) -> list[dict[str, Any]] | str:
 
         inline_response = iam.list_role_policies(RoleName=role_name)
         for policy_name in inline_response.get("PolicyNames", []):
-            policy_response = iam.get_role_policy(RoleName=role_name, PolicyName=policy_name)
-            policies.append({
-                "name": policy_name,
-                "type": "inline",
-                "document": policy_response["PolicyDocument"],
-            })
+            policy_response = iam.get_role_policy(
+                RoleName=role_name, PolicyName=policy_name
+            )
+            policies.append(
+                {
+                    "name": policy_name,
+                    "type": "inline",
+                    "document": policy_response["PolicyDocument"],
+                }
+            )
 
         attached_response = iam.list_attached_role_policies(RoleName=role_name)
         for policy in attached_response.get("AttachedPolicies", []):
@@ -196,13 +201,17 @@ def _fetch_role_policies(role_name: str) -> list[dict[str, Any]] | str:
             policy_name = policy["PolicyName"]
             policy_info = iam.get_policy(PolicyArn=policy_arn)
             version_id = policy_info["Policy"]["DefaultVersionId"]
-            version_response = iam.get_policy_version(PolicyArn=policy_arn, VersionId=version_id)
-            policies.append({
-                "name": policy_name,
-                "type": "managed",
-                "arn": policy_arn,
-                "document": version_response["PolicyVersion"]["Document"],
-            })
+            version_response = iam.get_policy_version(
+                PolicyArn=policy_arn, VersionId=version_id
+            )
+            policies.append(
+                {
+                    "name": policy_name,
+                    "type": "managed",
+                    "arn": policy_arn,
+                    "document": version_response["PolicyVersion"]["Document"],
+                }
+            )
 
         return policies
 
@@ -220,6 +229,7 @@ def _fetch_role_policies(role_name: str) -> list[dict[str, Any]] | str:
 # =============================================================================
 # STATEMENT ANALYSIS
 # =============================================================================
+
 
 def _analyze_statement(
     statement: dict[str, Any],
@@ -379,18 +389,20 @@ def _analyze_not_action(
             findings.append(finding)
 
     if resource_scope == "ALL":
-        findings.append({
-            "action": f"NotAction:{','.join(not_actions[:3])}{'...' if len(not_actions) > 3 else ''}",
-            "risk": "HIGH",
-            "explanation": f"Grants all actions EXCEPT {len(not_actions)} pattern(s) - review carefully",
-            "resource_scope": resource_scope,
-            "resources": resources,
-            "conditions": conditions,
-            "source": source,
-            "via_not_action": True,
-            "via_wildcard_action": False,
-            "original_action": "NotAction",
-        })
+        findings.append(
+            {
+                "action": f"NotAction:{','.join(not_actions[:3])}{'...' if len(not_actions) > 3 else ''}",
+                "risk": "HIGH",
+                "explanation": f"Grants all actions EXCEPT {len(not_actions)} pattern(s) - review carefully",
+                "resource_scope": resource_scope,
+                "resources": resources,
+                "conditions": conditions,
+                "source": source,
+                "via_not_action": True,
+                "via_wildcard_action": False,
+                "original_action": "NotAction",
+            }
+        )
 
     return findings
 
@@ -526,9 +538,11 @@ def format_egress(result: dict[str, Any], verbose: bool = False) -> None:
     console = Console(highlight=False)  # Disable auto-highlighting
 
     console.print()
-    console.print(Text.assemble(
-        ("[bold][ EGRESS ][/bold] What can this role do?", ""),
-    ))
+    console.print(
+        Text.assemble(
+            ("[bold][ EGRESS ][/bold] What can this role do?", ""),
+        )
+    )
     console.print("-" * 60)
 
     if result.get("status") == "error":
@@ -553,10 +567,12 @@ def format_egress(result: dict[str, Any], verbose: bool = False) -> None:
 
     categories = summary.get("categories", [])
     if categories:
-        console.print(Text.assemble(
-            ("  Categories: ", "dim"),
-            (", ".join(categories), "dim cyan"),
-        ))
+        console.print(
+            Text.assemble(
+                ("  Categories: ", "dim"),
+                (", ".join(categories), "dim cyan"),
+            )
+        )
         console.print()
 
     for finding in findings:
@@ -591,37 +607,49 @@ def _render_egress_finding(console, finding: dict[str, Any], verbose: bool) -> N
     # === LINE 2: Explanation ===
     explanation = finding.get("explanation", "")
     if explanation:
-        console.print(Text.assemble(
-            ("           ", ""),
-            (str(explanation), "dim"),
-        ))
+        console.print(
+            Text.assemble(
+                ("           ", ""),
+                (str(explanation), "dim"),
+            )
+        )
 
     # === VERBOSE DETAILS ===
     if verbose:
         source = finding.get("source", "")
         if source:
-            console.print(Text.assemble(
-                ("           Source: ", "dim"),
-                (str(source), "cyan"),
-            ))
+            console.print(
+                Text.assemble(
+                    ("           Source: ", "dim"),
+                    (str(source), "cyan"),
+                )
+            )
 
         if resource_scope == "SCOPED":
             resources = finding.get("resources", [])
             if resources:
-                res_str = resources[0] if len(resources) == 1 else f"{resources[0]} (+{len(resources)-1})"
+                res_str = (
+                    resources[0]
+                    if len(resources) == 1
+                    else f"{resources[0]} (+{len(resources) - 1})"
+                )
                 if len(res_str) > 50:
                     res_str = res_str[:47] + "..."
-                console.print(Text.assemble(
-                    ("           Resource: ", "dim"),
-                    (str(res_str), "cyan"),
-                ))
+                console.print(
+                    Text.assemble(
+                        ("           Resource: ", "dim"),
+                        (str(res_str), "cyan"),
+                    )
+                )
 
         conditions = finding.get("conditions", {})
         if conditions:
-            console.print(Text.assemble(
-                ("           Conditions: ", "dim"),
-                ("present (may reduce risk)", "green"),
-            ))
+            console.print(
+                Text.assemble(
+                    ("           Conditions: ", "dim"),
+                    ("present (may reduce risk)", "green"),
+                )
+            )
 
     console.print()
 

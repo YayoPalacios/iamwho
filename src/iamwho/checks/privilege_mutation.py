@@ -13,7 +13,6 @@ from typing import Any
 
 from iamwho.checks import egress
 
-
 # =============================================================================
 # ESCALATION DEFINITIONS
 # =============================================================================
@@ -53,7 +52,6 @@ ESCALATION_PATHS: dict[str, dict[str, Any]] = {
         "escalation": "Attach AdministratorAccess to group you belong to",
         "remediation": "Scope Resource to specific policy ARNs and group ARNs",
     },
-
     # =========================================================================
     # INLINE POLICY CREATION - Can grant arbitrary permissions
     # =========================================================================
@@ -78,7 +76,6 @@ ESCALATION_PATHS: dict[str, dict[str, Any]] = {
         "escalation": "Grant your group any permission",
         "remediation": "Remove this permission or scope to specific groups",
     },
-
     # =========================================================================
     # POLICY VERSION MANIPULATION
     # =========================================================================
@@ -96,7 +93,6 @@ ESCALATION_PATHS: dict[str, dict[str, Any]] = {
         "escalation": "Revert policy to older, more permissive version",
         "remediation": "Scope to specific policy ARNs, audit policy version history",
     },
-
     # =========================================================================
     # CREDENTIAL CREATION - Persistence and takeover
     # =========================================================================
@@ -121,7 +117,6 @@ ESCALATION_PATHS: dict[str, dict[str, Any]] = {
         "escalation": "Take over another user's console access",
         "remediation": "Scope Resource to self only (arn:aws:iam::*:user/${aws:username})",
     },
-
     # =========================================================================
     # TRUST POLICY MANIPULATION - Backdoor roles
     # =========================================================================
@@ -132,7 +127,6 @@ ESCALATION_PATHS: dict[str, dict[str, Any]] = {
         "escalation": "Backdoor any role to trust attacker-controlled principal",
         "remediation": "Never grant on Resource:* - scope to specific non-privileged roles",
     },
-
     # =========================================================================
     # ROLE PASSING - Pivot point (requires service to use the role)
     # =========================================================================
@@ -144,7 +138,6 @@ ESCALATION_PATHS: dict[str, dict[str, Any]] = {
         "requires_combination": True,
         "remediation": "Scope Resource to specific role ARNs with least privilege",
     },
-
     # =========================================================================
     # ROLE ASSUMPTION - Lateral movement
     # =========================================================================
@@ -156,7 +149,6 @@ ESCALATION_PATHS: dict[str, dict[str, Any]] = {
         "requires_combination": True,
         "remediation": "Scope Resource to specific role ARNs needed for the workload",
     },
-
     # =========================================================================
     # LAMBDA ABUSE - Code execution with role credentials
     # =========================================================================
@@ -200,7 +192,6 @@ ESCALATION_PATHS: dict[str, dict[str, Any]] = {
         "requires_combination": True,
         "remediation": "Scope to specific function ARNs",
     },
-
     # =========================================================================
     # EC2 ABUSE - Instance with role
     # =========================================================================
@@ -212,7 +203,6 @@ ESCALATION_PATHS: dict[str, dict[str, Any]] = {
         "requires_combination": True,
         "remediation": "Restrict via ec2:InstanceProfile condition key",
     },
-
     # =========================================================================
     # GLUE ABUSE - Dev endpoints with role
     # =========================================================================
@@ -232,7 +222,6 @@ ESCALATION_PATHS: dict[str, dict[str, Any]] = {
         "requires_combination": True,
         "remediation": "Scope to specific endpoint ARNs",
     },
-
     # =========================================================================
     # CLOUDFORMATION - Infrastructure as code abuse
     # =========================================================================
@@ -252,7 +241,6 @@ ESCALATION_PATHS: dict[str, dict[str, Any]] = {
         "requires_combination": True,
         "remediation": "Scope to specific stack ARNs",
     },
-
     # =========================================================================
     # DATA PIPELINE - Legacy but dangerous
     # =========================================================================
@@ -264,7 +252,6 @@ ESCALATION_PATHS: dict[str, dict[str, Any]] = {
         "requires_combination": True,
         "remediation": "Prefer Step Functions or other modern alternatives",
     },
-
     # =========================================================================
     # SAGEMAKER - Notebooks with role
     # =========================================================================
@@ -284,7 +271,6 @@ ESCALATION_PATHS: dict[str, dict[str, Any]] = {
         "requires_combination": True,
         "remediation": "Scope to specific notebook instance ARNs",
     },
-
     # =========================================================================
     # SSM - Command execution on EC2
     # =========================================================================
@@ -304,7 +290,6 @@ ESCALATION_PATHS: dict[str, dict[str, Any]] = {
         "requires_combination": True,
         "remediation": "Scope to specific instance ARNs or tags",
     },
-
     # =========================================================================
     # ECS - Container execution with role
     # =========================================================================
@@ -324,7 +309,6 @@ ESCALATION_PATHS: dict[str, dict[str, Any]] = {
         "requires_combination": True,
         "remediation": "Restrict iam:PassRole to specific ECS task roles",
     },
-
     # =========================================================================
     # CODESTAR / CODEBUILD - CI/CD abuse
     # =========================================================================
@@ -428,7 +412,6 @@ ESCALATION_COMBOS: list[dict[str, Any]] = [
         "escalation": "Create build project with admin role, run build",
         "requires_passrole_wildcard_for_critical": True,
     },
-
     # =========================================================================
     # CREDENTIAL + ASSUME CHAINS
     # =========================================================================
@@ -439,7 +422,6 @@ ESCALATION_COMBOS: list[dict[str, Any]] = [
         "escalation": "Create long-lived credentials, then assume privileged roles",
         "requires_passrole_wildcard_for_critical": False,
     },
-
     # =========================================================================
     # SSM CHAINS
     # =========================================================================
@@ -450,7 +432,6 @@ ESCALATION_COMBOS: list[dict[str, Any]] = [
         "escalation": "Find instances with privileged roles, execute commands",
         "requires_passrole_wildcard_for_critical": False,
     },
-
     # =========================================================================
     # POLICY VERSION CHAIN
     # =========================================================================
@@ -467,6 +448,7 @@ ESCALATION_COMBOS: list[dict[str, Any]] = [
 # =============================================================================
 # MAIN ANALYSIS FUNCTION
 # =============================================================================
+
 
 def analyze_privilege_mutation(principal_arn: str) -> dict[str, Any]:
     """
@@ -594,10 +576,9 @@ def _check_mutation(permissions: list[dict[str, Any]]) -> dict[str, Any]:
     potential_escalations = [f for f in findings if f.get("requires_combination")]
 
     # Calculate risk from direct + combo (not potential)
-    all_risks = (
-        [f["risk"] for f in direct_escalations] +
-        [c["risk"] for c in combo_findings]
-    )
+    all_risks = [f["risk"] for f in direct_escalations] + [
+        c["risk"] for c in combo_findings
+    ]
 
     overall_risk, verdict = _determine_verdict(all_risks, findings)
 
@@ -617,12 +598,12 @@ def _check_mutation(permissions: list[dict[str, Any]]) -> dict[str, Any]:
         "findings": all_findings,  # Unified list for rendering
         "summary": {
             "critical_count": (
-                sum(1 for f in direct_escalations if f["risk"] == "CRITICAL") +
-                sum(1 for c in combo_findings if c["risk"] == "CRITICAL")
+                sum(1 for f in direct_escalations if f["risk"] == "CRITICAL")
+                + sum(1 for c in combo_findings if c["risk"] == "CRITICAL")
             ),
             "high_count": (
-                sum(1 for f in direct_escalations if f["risk"] == "HIGH") +
-                sum(1 for c in combo_findings if c["risk"] == "HIGH")
+                sum(1 for f in direct_escalations if f["risk"] == "HIGH")
+                + sum(1 for c in combo_findings if c["risk"] == "HIGH")
             ),
             "medium_count": sum(1 for f in findings if f["risk"] == "MEDIUM"),
             "verdict": overall_risk,
@@ -644,26 +625,32 @@ def _check_combos(
             continue
 
         # Check PassRole scope for combos that depend on it
-        passrole_scope = action_details.get("iam:PassRole", {}).get("resource_scope", "SCOPED")
+        passrole_scope = action_details.get("iam:PassRole", {}).get(
+            "resource_scope", "SCOPED"
+        )
         passrole_is_wildcard = passrole_scope == "ALL"
 
         # Determine effective risk
         base_risk = combo["risk"]
-        if passrole_is_wildcard and combo.get("requires_passrole_wildcard_for_critical", False):
+        if passrole_is_wildcard and combo.get(
+            "requires_passrole_wildcard_for_critical", False
+        ):
             effective_risk = "CRITICAL"
         else:
             effective_risk = base_risk
 
-        combo_findings.append({
-            "actions": required_actions,
-            "risk": effective_risk,
-            "base_risk": base_risk,
-            "description": combo["description"],
-            "escalation_path": combo["escalation"],
-            "passrole_is_wildcard": passrole_is_wildcard,
-            "escalated_due_to_wildcard": (effective_risk != base_risk),
-            "is_combo": True,
-        })
+        combo_findings.append(
+            {
+                "actions": required_actions,
+                "risk": effective_risk,
+                "base_risk": base_risk,
+                "description": combo["description"],
+                "escalation_path": combo["escalation"],
+                "passrole_is_wildcard": passrole_is_wildcard,
+                "escalated_due_to_wildcard": (effective_risk != base_risk),
+                "is_combo": True,
+            }
+        )
 
     return combo_findings
 
@@ -745,7 +732,9 @@ def format_mutation(result: dict[str, Any], verbose: bool = False) -> None:
     console.print("-" * 60)
 
     if result.get("status") == "error":
-        console.print(f"  [red]Error: {escape(result.get('message', 'Unknown error'))}[/red]")
+        console.print(
+            f"  [red]Error: {escape(result.get('message', 'Unknown error'))}[/red]"
+        )
         console.print()
         return
 
@@ -814,7 +803,9 @@ def _render_mutation_finding(console, finding: dict[str, Any], verbose: bool) ->
     path_line = Text()
     path_line.append("        └─> ", style="dim")
     # ESCAPED: Escalation path
-    path_line.append(escape(finding.get("escalation_path", "Unknown escalation")), style="white")
+    path_line.append(
+        escape(finding.get("escalation_path", "Unknown escalation")), style="white"
+    )
     console.print(path_line)
 
     # Verbose: show resource scope and remediation

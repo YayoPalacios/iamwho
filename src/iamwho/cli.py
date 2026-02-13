@@ -2,7 +2,6 @@
 
 import json
 import re
-import sys
 from typing import Optional
 
 import typer
@@ -186,7 +185,9 @@ def print_no_findings(message: str = "No findings detected"):
     console.print(text)
 
 
-def print_summary(ingress_findings: list, egress_findings: list, mutation_findings: list):
+def print_summary(
+    ingress_findings: list, egress_findings: list, mutation_findings: list
+):
     """Print the summary table with better spacing and organization."""
     console.print()
     console.print("━" * 60, style="bold")
@@ -423,7 +424,9 @@ def calculate_exit_code(all_findings: list[dict], fail_on: Optional[str]) -> int
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.command()
 def analyze(
-    principal_arn: str = typer.Argument(..., help="AWS IAM Role or User ARN to analyze"),
+    principal_arn: str = typer.Argument(
+        ..., help="AWS IAM Role or User ARN to analyze"
+    ),
     check: str = typer.Option(
         "all", "--check", "-c", help="Check type: ingress, egress, mutation, or all"
     ),
@@ -449,7 +452,9 @@ def analyze(
     """
     # Validate ARN
     if not is_valid_arn(principal_arn):
-        console.print(f"\n[red bold]Error:[/red bold] Invalid ARN format: {principal_arn}\n")
+        console.print(
+            f"\n[red bold]Error:[/red bold] Invalid ARN format: {principal_arn}\n"
+        )
         raise typer.Exit(code=1)
 
     # Validate check type
@@ -553,7 +558,9 @@ def analyze(
     exit_code = calculate_exit_code(all_findings, fail_on)
 
     if exit_code != 0 and fail_on:
-        console.print(f"[dim]Exiting with code {exit_code} (--fail-on {fail_on})[/dim]\n")
+        console.print(
+            f"[dim]Exiting with code {exit_code} (--fail-on {fail_on})[/dim]\n"
+        )
 
     raise typer.Exit(code=exit_code)
 
