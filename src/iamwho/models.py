@@ -2,9 +2,11 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import total_ordering
 from typing import Any
 
 
+@total_ordering
 class RiskLevel(Enum):
     """Risk classification levels."""
 
@@ -14,7 +16,9 @@ class RiskLevel(Enum):
     LOW = "LOW"
     INFO = "INFO"
 
-    def __lt__(self, other: "RiskLevel") -> bool:
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, RiskLevel):
+            return NotImplemented
         order = [
             RiskLevel.INFO,
             RiskLevel.LOW,
@@ -23,6 +27,11 @@ class RiskLevel(Enum):
             RiskLevel.CRITICAL,
         ]
         return order.index(self) < order.index(other)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, RiskLevel):
+            return NotImplemented
+        return self.value == other.value
 
 
 class AssumeType(Enum):
@@ -113,7 +122,7 @@ class IngressResult:
 
     role_arn: str
     findings: list[TrustFinding] = field(default_factory=list)
-    highest_risk: RiskLevel = RiskLevel.INFO
+    highest_risk: RiskLevel = field(default_factory=lambda: RiskLevel.INFO)
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:

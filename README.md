@@ -136,12 +136,15 @@ AWS_PROFILE=prod iamwho analyze <role-arn>
 Running with `--verbose` provides reasoning and potential escalation paths:
 
 ```text
-[HIGH] Role allows iam:PassRole to EC2
-  └─ This enables creation of EC2 instances with elevated roles
-     which may grant access to additional AWS services.
+[HIGH] ! * iam:CreateAccessKey
+           -> Can create access keys for users
+           Source: inline:inline-danger
+           Scope: ALL
 
-[CRITICAL] sts:AssumeRole chain detected
-  └─ Compromised role can assume AdminRole via trust relationship
+[CRIT] ✗ sts:AssumeRole
+           -> Can assume other IAM roles
+           Source: inline:inline-danger
+           Scope: ALL
 ```
 
 Using `--json` produces structured output suitable for CI/CD and reporting:
