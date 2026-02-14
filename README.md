@@ -98,10 +98,9 @@ pip install -e .
 
 ## Requirements
 
-- Python 3.9+
-- boto3
-- rich
-- typer
+- Python 3.10+
+- AWS credentials configured
+- IAM permissions: iam:GetRole, iam:GetRolePolicy
 
 ---
 
