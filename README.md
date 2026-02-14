@@ -3,7 +3,7 @@
 
 > **Static AWS IAM analyzer focused on post-compromise blast radius.**
 
-![iamwho demo](./assets/demo.gif)
+![iamwho demo](./assets/demo.png)
 
 ---
 
