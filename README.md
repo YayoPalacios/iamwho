@@ -98,9 +98,9 @@ pip install -e .
 
 ## Requirements
 
-- Python 3.10+
-- AWS credentials configured
-- IAM permissions: iam:GetRole, iam:GetRolePolicy
+- Python `3.10+`
+- AWS credentials configured (env vars or profile)
+- IAM read-only permissions for role and policy inspection (e.g. `iam:Get*`, `iam:List*`)
 
 ---
 
@@ -195,7 +195,7 @@ Create `.github/workflows/iam-audit.yml`:
 | `AWS_ACCESS_KEY_ID` | IAM user access key |
 | `AWS_SECRET_ACCESS_KEY` | IAM user secret key |
 
-> The IAM principal only requires `iam:GetRole` and `iam:GetRolePolicy`.
+> The IAM principal requires read-only IAM permissions to inspect roles and attached policies.
 
 ---
 
