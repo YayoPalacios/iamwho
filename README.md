@@ -1,7 +1,7 @@
 # iamwho
 [![PyPI](https://img.shields.io/pypi/v/iamwho)](https://pypi.org/project/iamwho/)
 
-> **Static AWS IAM analyzer focused on post-compromise blast radius.**
+> **iamwho: Static AWS IAM analyzer focused on post-compromise blast radius.**
 
 ![iamwho demo](./assets/demo.png)
 
@@ -11,30 +11,26 @@
 
 The diagram below illustrates the difference between **access analysis** and **impact analysis**.
 
-**Access analysis** asks whether an action is allowed.
-**Impact analysis** asks what *else* becomes reachable once an identity is compromised.
+- **Access analysis**: Determines whether an action is allowed.
+- **Impact analysis**: Identifies what else becomes reachable once an identity is compromised.
 
 ![Impact vs Access analysis](assets/diagram.png)
 
-*iamwho* walks this graph to expose escalation paths and blast-radius expansion
-that are invisible when policies are evaluated in isolation.
+*iamwho* analyzes this graph to expose escalation paths and blast-radius expansions that remain hidden when policies are evaluated in isolation.
 
 ---
 
 ## Why
 
-Most AWS IAM tools answer a narrow, defensive question:
+While most AWS IAM tools focus on the question: 
 
 > *Is this action allowed?*
 
-That question matters — but it’s incomplete.
-
-**iamwho** is built around a different failure mode:
+This perspective is incomplete. **iamwho** shifts the focus to a crucial failure mode: 
 
 > *If this identity is compromised, what else becomes reachable?*
 
-Attackers don’t think in terms of individual policies.
-They think in **trust chains**, **permission composition**, and **what they can become next**.
+Recognizing that attackers consider **trust chains**, **permission composition**, and their potential next steps is vital.
 
 | AWS Tool | Primary Focus | Blind Spot |
 |:---------|:--------------|:-----------|
@@ -42,33 +38,31 @@ They think in **trust chains**, **permission composition**, and **what they can 
 | Policy Simulator | Point-in-time authorization | Post-compromise reach |
 | Config Rules | Compliance posture | Effective permission composition |
 
-IAM risk rarely lives in a single policy.
+IAM risk rarely resides within a single policy. A role might seem low risk in isolation yet become dangerous when:
+- Assumed by another reachable identity
+- Grants permissions enabling mutations
+- Unlocks additional roles or services
 
-A role can appear low risk when reviewed in isolation, yet become dangerous when:
-- it can be assumed by another reachable identity
-- it grants permissions that enable mutation
-- those permissions unlock additional roles or services
+**iamwho** examines these relationships as a graph, making visible the **ingress → egress → mutation** paths that expand the blast radius, even when individual policies appear secure.
 
-**iamwho** analyzes these relationships as a graph — surfacing **ingress → egress → mutation**
-paths that expand blast radius even when no single policy looks suspicious.
 
 ---
-
 ## What iamwho Does
 
-**iamwho** is a static **AWS IAM security analyzer** that models IAM the way an attacker would.
+**iamwho** is a static **AWS IAM security analyzer** that evaluates IAM configurations and trust relationships from an attacker's perspective. It focuses solely on static analysis, without relying on runtime activity, logs, or CloudTrail events.
 
-Static analysis here refers to **IAM configuration and trust relationships** —
-not runtime activity, logs, or CloudTrail events.
+The tool answers three core questions:
+- **INGRESS** — Who can assume this identity?
+- **EGRESS** — What does this identity enable?
+- **MUTATION** — Can access be escalated or persisted?
 
-It helps answer three core questions:
+**iamwho** is designed for security impact analysis and does not include:
+- Runtime detection or IAM activity monitoring.
+- Full IAM policy simulation for real-time permission testing.
+- Network or secrets analysis outside of IAM configurations.
+- Compliance mapping for standards such as CIS, SOC2, etc.
 
-- **INGRESS** — Who can become this identity?
-- **EGRESS** — What does this identity effectively enable?
-- **MUTATION** — Can that access be escalated or persisted?
-
-This tool is intentionally scoped for **security impact analysis**, not policy authoring,
-education, or compliance reporting.
+By focusing on these areas, **iamwho** identifies potential vulnerabilities and escalation paths that may not be apparent through isolated policy evaluations, helping to improve your overall security posture.
 
 ---
 
@@ -236,31 +230,6 @@ Create `.github/workflows/iam-audit.yml`:
 
 ---
 
-## Contributing
-
-iamwho is currently maintained as a personal security research project.
-
-If you find issues, edge cases, or gaps in analysis, feel free to open an issue.
-Suggestions and small pull requests are welcome as long as they fit the
-security-focused scope of the project.
-
-This tool is intentionally opinionated and not designed to cover all IAM use
-cases.
-
----
-
-## What iamwho Does Not Do
-
-- Runtime detection or CloudTrail analysis
-- Full IAM policy simulation
-- Network or secrets analysis
-- Compliance mapping (CIS, SOC2, etc.)
-
-**iamwho** focuses strictly on **static IAM graph analysis** —
-understanding what becomes reachable when an identity is abused.
-
----
-
 ## Documentation
 
 - [Cheatsheet](docs/cheatsheet.md) — quick reference
@@ -270,4 +239,6 @@ understanding what becomes reachable when an identity is abused.
 
 ## License
 
-MIT
+iamwho is licensed under the MIT License.
+The MIT License permits users to use, copy, modify, and distribute the software with minimal restrictions. The only requirement is to include the original copyright and permission notice in all copies or substantial portions of the software.
+This allows you to freely use iamwho in both open-source and proprietary projects.
