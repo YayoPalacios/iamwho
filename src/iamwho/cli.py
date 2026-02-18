@@ -112,7 +112,6 @@ def print_banner():
 
 def print_target(role_arn: str):
     """Print the target role being analyzed."""
-    console.print()
     console.print(
         Panel(
             Text(role_arn, style="bold cyan"),
@@ -188,7 +187,7 @@ def print_finding(finding: dict, verbose: bool = False):
             rem_text = Text()
             rem_text.append("           ", style="dim")
             rem_text.append("Fix: ", style="dim")
-            rem_text.append(str(remediation), style="dim green")
+            rem_text.append(str(remediation), style="italic cyan")
             console.print(rem_text)
 
         conditions = finding.get("conditions", {})
