@@ -1,3 +1,4 @@
+# src/iamwho/cli.py
 """IAMWho CLI - AWS IAM Role Security Analyzer"""
 
 import json
@@ -85,10 +86,29 @@ def get_section_severity(findings: list) -> str:
 def print_banner():
     """Print the IAMWho banner."""
     banner = Text()
-    # ... [Banner drawing code as in the original]
+    banner.append("╦", style="cyan bold")
+    banner.append("╔═╗", style="blue bold")
+    banner.append("╔╦╗", style="magenta bold")
+    banner.append("╦ ╦", style="red bold")
+    banner.append("╦ ╦", style="yellow bold")
+    banner.append("╔═╗\n", style="green bold")
+
+    banner.append("║", style="cyan bold")
+    banner.append("╠═╣", style="blue bold")
+    banner.append("║║║", style="magenta bold")
+    banner.append("║║║", style="red bold")
+    banner.append("╠═╣", style="yellow bold")
+    banner.append("║ ║\n", style="green bold")
+
+    banner.append("╩", style="cyan bold")
+    banner.append("╩ ╩", style="blue bold")
+    banner.append("╩ ╩", style="magenta bold")
+    banner.append("╚╩╝", style="red bold")
+    banner.append("╩ ╩", style="yellow bold")
+    banner.append("╚═╝", style="green bold")
 
     console.print(banner)
-    console.print("[dim]AWS IAM Role Security Analyzer[/dim]")
+    console.print("[dim]AWS IAM Role Security Analyzer[/dim]\n")
 
 def print_target(role_arn: str):
     """Print the target role being analyzed."""
@@ -111,12 +131,12 @@ def print_section_header(title: str, subtitle: str, color: str):
     console.print("└─────────────────────────────────────────────────────────")
 
 def print_finding(finding: dict, verbose: bool = False):
-    """Print a single finding with proper formatting."""
     severity = str(finding.get("severity", "LOW")).upper()
     resource = finding.get("resource", finding.get("principal", "*"))
     action = finding.get("action", "")
     description = finding.get("description", "")
     is_combo = finding.get("is_combo", False)
+    finding_id = finding.get("id")
 
     line = Text()
     line.append(get_severity_text(severity))
@@ -133,6 +153,9 @@ def print_finding(finding: dict, verbose: bool = False):
         line.append(" [", style="dim")
         line.append("COMBO", style="bold magenta")
         line.append("]", style="dim")
+
+    if finding_id:
+        line.append(f"  id:{finding_id}", style="dim")
 
     console.print(line)
 
@@ -159,6 +182,14 @@ def print_finding(finding: dict, verbose: bool = False):
             scope_style = "red" if str(scope) == "ALL" else "cyan"
             scope_text.append(str(scope), style=scope_style)
             console.print(scope_text)
+
+        remediation = finding.get("remediation")
+        if remediation:
+            rem_text = Text()
+            rem_text.append("           ", style="dim")
+            rem_text.append("Fix: ", style="dim")
+            rem_text.append(str(remediation), style="dim green")
+            console.print(rem_text)
 
         conditions = finding.get("conditions", {})
         if conditions:
@@ -302,11 +333,14 @@ def normalize_mutation_findings(result) -> list[dict]:
     raw_findings = result.get("findings", [])
     for f in raw_findings:
         action = f.get("action", "")
+        remediation = f.get("remediation", "")
+        finding_id = f.get("id")
         if f.get("actions"):
             action = " + ".join(f.get("actions", []))
 
         findings.append(
             {
+                "id": finding_id,
                 "severity": str(f.get("risk", f.get("severity", "LOW"))).upper(),
                 "resource": action or f.get("name", "*"),
                 "action": "",
@@ -316,6 +350,7 @@ def normalize_mutation_findings(result) -> list[dict]:
                 "conditions": f.get("conditions", {}),
                 "source": f.get("source_policy") or f.get("source"),
                 "source_policy": f.get("source_policy"),
+                "remediation": remediation,
             }
         )
 

@@ -9,6 +9,7 @@ Security Focus:
 - PassRole pivot chains
 """
 
+import hashlib
 from typing import Any
 
 from iamwho.checks import egress
@@ -259,7 +260,7 @@ ESCALATION_PATHS: dict[str, dict[str, Any]] = {
         "risk": "MEDIUM",
         "category": "SERVICE_CREATE",
         "description": "Can create SageMaker notebook",
-        "escalation": "Create notebook with privileged role, open Jupyter for cred access",
+        "escalation": "Create notebook with privileged role, access via Jupyter for cred access",
         "requires_combination": True,
         "remediation": "Scope iam:PassRole to specific SageMaker execution roles",
     },
@@ -446,6 +447,23 @@ ESCALATION_COMBOS: list[dict[str, Any]] = [
 
 
 # =============================================================================
+# Finding IDs (stable / deterministic)
+# =============================================================================
+def _mutation_finding_id(actions: list[str], category: str) -> str:
+    """
+    Stable ID via SHA-256 of canonical fingerprint:
+      - check type
+      - sorted actions
+      - category (direct/combo)
+    ID format: mutation-<8hex>
+    """
+    actions_sorted = sorted([a for a in actions if a])
+    fingerprint = f"mutation|{','.join(actions_sorted)}|{category}"
+    digest = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
+    return f"mutation-{digest[:8]}"
+
+
+# =============================================================================
 # MAIN ANALYSIS FUNCTION
 # =============================================================================
 
@@ -525,8 +543,8 @@ def _check_mutation(permissions: list[dict[str, Any]]) -> dict[str, Any]:
         action_details[action] = perm
         _expand_wildcards(action, perm, found_actions, action_details)
 
-    # Check for escalation paths
-    for action in found_actions:
+    # Check for escalation paths (deterministic ordering)
+    for action in sorted(found_actions):
         if action not in ESCALATION_PATHS:
             continue
 
@@ -547,6 +565,7 @@ def _check_mutation(permissions: list[dict[str, Any]]) -> dict[str, Any]:
             effective_risk = base_risk
 
         finding = {
+            "id": _mutation_finding_id([action], "direct"),
             "action": action,
             "actions": [action],  # For consistent rendering
             "risk": effective_risk,
@@ -639,13 +658,23 @@ def _check_combos(
         else:
             effective_risk = base_risk
 
+        # Surface remediation (from ESCALATION_PATHS) for combo actions
+        remediations: list[str] = []
+        for a in required_actions:
+            remediation = ESCALATION_PATHS.get(a, {}).get("remediation", "")
+            remediation = str(remediation).strip()
+            if remediation and remediation not in remediations:
+                remediations.append(remediation)
+
         combo_findings.append(
             {
+                "id": _mutation_finding_id(required_actions, "combo"),
                 "actions": required_actions,
                 "risk": effective_risk,
                 "base_risk": base_risk,
                 "description": combo["description"],
                 "escalation_path": combo["escalation"],
+                "remediation": " | ".join(remediations) if remediations else "",
                 "passrole_is_wildcard": passrole_is_wildcard,
                 "escalated_due_to_wildcard": (effective_risk != base_risk),
                 "is_combo": True,
