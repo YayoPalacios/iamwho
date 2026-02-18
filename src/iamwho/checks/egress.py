@@ -277,9 +277,11 @@ def _canonicalize_evidence_entry(evidence: dict[str, Any]) -> dict[str, Any]:
 
     statement_index = int(evidence.get("statement_index", 0))
 
-    normalized_resources = _normalize_resources(
-        [str(r) for r in (evidence.get("normalized_resources") or [])]
-    )
+    raw_resources = evidence.get("resources")
+    if raw_resources is None:
+        raw_resources = evidence.get("normalized_resources") or []
+
+    normalized_resources = _normalize_resources([str(r) for r in raw_resources])
     condition_keys = sorted(set(str(k) for k in (evidence.get("condition_keys") or [])))
 
     return {
@@ -288,11 +290,10 @@ def _canonicalize_evidence_entry(evidence: dict[str, Any]) -> dict[str, Any]:
         "policy_arn": policy_arn,
         "statement_sid": statement_sid,
         "statement_index": statement_index,
+        "resources": normalized_resources,
         "normalized_resources": normalized_resources,
         "condition_keys": condition_keys,
     }
-
-
 def _dedupe_and_sort_evidence(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Deterministically deduplicate + sort evidence entries."""
     seen: dict[tuple[Any, ...], dict[str, Any]] = {}

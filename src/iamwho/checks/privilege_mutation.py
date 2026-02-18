@@ -572,6 +572,10 @@ def _check_mutation(permissions: list[dict[str, Any]]) -> dict[str, Any]:
         else:
             evidence = []
 
+
+        raw_resources = perm.get("resources", []) or []
+        resources = sorted(set(str(r) for r in raw_resources)) if raw_resources else []
+
         finding = {
             "id": _mutation_finding_id([action], "direct"),
             "action": action,
@@ -583,7 +587,7 @@ def _check_mutation(permissions: list[dict[str, Any]]) -> dict[str, Any]:
             "escalation_path": path_info["escalation"],
             "remediation": path_info.get("remediation", ""),
             "resource_scope": resource_scope,
-            "resources": perm.get("resources", []),
+            "resources": resources,
             "source_policy": perm.get("source", "Unknown"),
             "evidence": evidence,
             "requires_combination": requires_combo,
@@ -845,6 +849,10 @@ def _render_mutation_finding(console, finding: dict[str, Any], verbose: bool) ->
         header.append("  ")
         header.append("[COMBO]", style="bold magenta")
 
+    if finding.get("id"):
+        header.append("  ")
+        header.append(escape(f"(id: {finding['id']})"), style="dim")
+
     console.print(header)
 
     # Second line: Tree connector + Escalation path
@@ -865,6 +873,56 @@ def _render_mutation_finding(console, finding: dict[str, Any], verbose: bool) ->
             scope_style = "red" if scope == "ALL" else "cyan"
             scope_line.append(escape(scope), style=scope_style)  # ESCAPED
             console.print(scope_line)
+
+        evidence = finding.get("evidence") or []
+        if isinstance(evidence, list) and evidence:
+            ev_header = Text()
+            ev_header.append("            Evidence:", style="dim")
+            console.print(ev_header)
+
+            for ev in evidence:
+                if not isinstance(ev, dict):
+                    continue
+
+                policy_type = str(ev.get("policy_type", "")).strip()
+                policy_name = str(ev.get("policy_name", "")).strip()
+                statement_index = ev.get("statement_index")
+                statement_sid = ev.get("statement_sid")
+
+                resources = ev.get("resources")
+                if resources is None:
+                    resources = ev.get("normalized_resources") or []
+                condition_keys = ev.get("condition_keys") or []
+
+                label = ""
+                if policy_type and policy_name:
+                    label = f"{policy_type}:{policy_name}"
+                else:
+                    label = policy_name or policy_type or "unknown"
+
+                meta = []
+                if statement_index is not None:
+                    meta.append(f"idx={statement_index}")
+                if statement_sid:
+                    meta.append(f"sid={statement_sid}")
+                meta_str = f" ({', '.join(meta)})" if meta else ""
+
+                entry_line = Text()
+                entry_line.append("              - ", style="dim")
+                entry_line.append(escape(label + meta_str), style="dim cyan")
+                console.print(entry_line)
+
+                if resources:
+                    res_line = Text()
+                    res_line.append("                resources: ", style="dim")
+                    res_line.append(escape(", ".join([str(r) for r in resources])), style="white")
+                    console.print(res_line)
+
+                if condition_keys:
+                    ck_line = Text()
+                    ck_line.append("                condition_keys: ", style="dim")
+                    ck_line.append(escape(", ".join([str(k) for k in condition_keys])), style="white")
+                    console.print(ck_line)
 
         if finding.get("remediation"):
             rem_line = Text()
