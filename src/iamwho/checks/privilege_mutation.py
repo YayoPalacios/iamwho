@@ -564,6 +564,14 @@ def _check_mutation(permissions: list[dict[str, Any]]) -> dict[str, Any]:
         else:
             effective_risk = base_risk
 
+        # Evidence: reuse the originating egress action evidence for this action.
+        # Canonicalize/dedupe deterministically using existing egress helper.
+        evidence = perm.get("evidence") or []
+        if isinstance(evidence, list):
+            evidence = egress._dedupe_and_sort_evidence(evidence)
+        else:
+            evidence = []
+
         finding = {
             "id": _mutation_finding_id([action], "direct"),
             "action": action,
@@ -577,6 +585,7 @@ def _check_mutation(permissions: list[dict[str, Any]]) -> dict[str, Any]:
             "resource_scope": resource_scope,
             "resources": perm.get("resources", []),
             "source_policy": perm.get("source", "Unknown"),
+            "evidence": evidence,
             "requires_combination": requires_combo,
             "escalated_due_to_wildcard": (effective_risk != base_risk),
             "is_combo": False,
@@ -666,6 +675,15 @@ def _check_combos(
             if remediation and remediation not in remediations:
                 remediations.append(remediation)
 
+        # Evidence: aggregate evidence from each required action.
+        # Canonicalize/dedupe deterministically using existing egress helper.
+        merged_evidence: list[dict[str, Any]] = []
+        for a in required_actions:
+            ev = action_details.get(a, {}).get("evidence") or []
+            if isinstance(ev, list):
+                merged_evidence.extend(ev)
+        merged_evidence = egress._dedupe_and_sort_evidence(merged_evidence)
+
         combo_findings.append(
             {
                 "id": _mutation_finding_id(required_actions, "combo"),
@@ -675,6 +693,7 @@ def _check_combos(
                 "description": combo["description"],
                 "escalation_path": combo["escalation"],
                 "remediation": " | ".join(remediations) if remediations else "",
+                "evidence": merged_evidence,
                 "passrole_is_wildcard": passrole_is_wildcard,
                 "escalated_due_to_wildcard": (effective_risk != base_risk),
                 "is_combo": True,

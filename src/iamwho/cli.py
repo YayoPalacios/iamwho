@@ -58,6 +58,7 @@ def get_severity_text(severity: str) -> Text:
     style, label = SEVERITY_STYLES.get(severity.upper(), ("dim", severity[:4].upper()))
     return Text(f"[{label}]", style=style)
 
+
 def get_severity_symbol(severity: str) -> Text:
     """Return colored symbol for severity."""
     symbols = {
@@ -71,6 +72,7 @@ def get_severity_symbol(severity: str) -> Text:
     symbol, style = symbols.get(severity.upper(), ("?", "dim"))
     return Text(symbol, style=style)
 
+
 def get_section_severity(findings: list) -> str:
     """Get the highest severity from a list of findings."""
     if not findings:
@@ -79,6 +81,7 @@ def get_section_severity(findings: list) -> str:
         if any(str(f.get("severity", "")).upper() == sev for f in findings):
             return sev
     return "PASS"
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Output Rendering
@@ -110,6 +113,7 @@ def print_banner():
     console.print(banner)
     console.print("[dim]AWS IAM Role Security Analyzer[/dim]\n")
 
+
 def print_target(role_arn: str):
     """Print the target role being analyzed."""
     console.print(
@@ -122,12 +126,14 @@ def print_target(role_arn: str):
         )
     )
 
+
 def print_section_header(title: str, subtitle: str, color: str):
     """Print a section header with light framing."""
     console.print()
     console.print(f"┌─ {title} ───────────────────────────────────────────────")
     console.print(f"│ {subtitle}")
     console.print("└─────────────────────────────────────────────────────────")
+
 
 def print_finding(finding: dict, verbose: bool = False):
     severity = str(finding.get("severity", "LOW")).upper()
@@ -198,12 +204,50 @@ def print_finding(finding: dict, verbose: bool = False):
             cond_text.append("present", style="green")
             console.print(cond_text)
 
+        # Evidence block (policy-only, deterministic)
+        evidence = finding.get("evidence") or []
+        if isinstance(evidence, list) and evidence:
+            ev_text = Text()
+            ev_text.append("           ", style="dim")
+            ev_text.append("Evidence:", style="dim")
+            console.print(ev_text)
+
+            # Collect unique policy labels deterministically
+            policies = set()
+
+            for ev in evidence:
+                if not isinstance(ev, dict):
+                    continue
+
+                policy_type = str(ev.get("policy_type", "")).strip()
+                policy_name = str(ev.get("policy_name", "")).strip()
+                policy_arn = ev.get("policy_arn")
+
+                if policy_type and policy_name:
+                    label = f"{policy_type}:{policy_name}"
+                elif policy_name:
+                    label = policy_name
+                elif policy_type:
+                    label = policy_type
+                elif policy_arn:
+                    label = str(policy_arn)
+                else:
+                    label = "(unknown policy)"
+
+                policies.add(label)
+
+            for label in sorted(policies):
+                bullet = Text("             - ", style="dim")
+                bullet.append(label, style="cyan")
+                console.print(bullet)
+
 def print_no_findings(message: str = "No findings detected"):
     """Print a no-findings message."""
     text = Text()
     text.append("  + ", style="green bold")
     text.append(message, style="green")
     console.print(text)
+
 
 def print_summary(ingress_findings: list, egress_findings: list, mutation_findings: list):
     """Print the summary table with better spacing and organization."""
@@ -254,6 +298,7 @@ def print_summary(ingress_findings: list, egress_findings: list, mutation_findin
     console.print(summary_line)
     console.print()
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Result Normalizers
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -294,6 +339,7 @@ def normalize_ingress_findings(result) -> list[dict]:
 
     return findings
 
+
 def normalize_egress_findings(result) -> list[dict]:
     """Convert egress result to list of finding dicts."""
     if not isinstance(result, dict):
@@ -315,10 +361,12 @@ def normalize_egress_findings(result) -> list[dict]:
                 "resource_scope": f.get("resource_scope"),
                 "conditions": f.get("conditions", {}),
                 "source": f.get("source"),
+                "evidence": f.get("evidence", []),
             }
         )
 
     return findings
+
 
 def normalize_mutation_findings(result) -> list[dict]:
     """Convert mutation result to list of finding dicts."""
@@ -350,10 +398,12 @@ def normalize_mutation_findings(result) -> list[dict]:
                 "source": f.get("source_policy") or f.get("source"),
                 "source_policy": f.get("source_policy"),
                 "remediation": remediation,
+                "evidence": f.get("evidence", []),
             }
         )
 
     return findings
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Validators
@@ -361,6 +411,7 @@ def normalize_mutation_findings(result) -> list[dict]:
 def is_valid_arn(arn: str) -> bool:
     """Validate AWS IAM ARN format."""
     return bool(ARN_PATTERN.match(arn))
+
 
 def validate_fail_on(value: Optional[str]) -> Optional[str]:
     """Validate --fail-on option."""
@@ -372,6 +423,7 @@ def validate_fail_on(value: Optional[str]) -> Optional[str]:
             f"Invalid value '{value}'. Must be one of: {', '.join(sorted(VALID_FAIL_ON))}"
         )
     return value_lower
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Exit Code Logic
@@ -410,10 +462,15 @@ def calculate_exit_code(all_findings: list[dict], fail_on: Optional[str]) -> int
     elif fail_on == "low":
         if counts.get("CRITICAL", 0) > 0:
             return 2
-        if counts.get("HIGH", 0) > 0 or counts.get("MEDIUM", 0) > 0 or counts.get("LOW", 0) > 0:
+        if (
+            counts.get("HIGH", 0) > 0
+            or counts.get("MEDIUM", 0) > 0
+            or counts.get("LOW", 0) > 0
+        ):
             return 1
 
     return 0
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CLI Commands
@@ -459,6 +516,7 @@ def analyze(
     try:
         if check in ("ingress", "all"):
             from iamwho.checks.ingress import analyze_ingress
+
             result = analyze_ingress(principal_arn)
             ingress_findings = normalize_ingress_findings(result)
             if output_json:
@@ -466,6 +524,7 @@ def analyze(
 
         if check in ("egress", "all"):
             from iamwho.checks.egress import analyze_egress
+
             result = analyze_egress(principal_arn)
             egress_findings = normalize_egress_findings(result)
             if output_json:
@@ -473,6 +532,7 @@ def analyze(
 
         if check in ("mutation", "all"):
             from iamwho.checks.privilege_mutation import analyze_privilege_mutation
+
             result = analyze_privilege_mutation(principal_arn)
             mutation_findings = normalize_mutation_findings(result)
             if output_json:
@@ -528,6 +588,7 @@ def analyze(
 
     raise typer.Exit(code=exit_code)
 
+
 @app.command()
 def version():
     """Show version information."""
@@ -539,6 +600,7 @@ def version():
         ver = "dev"
 
     console.print(f"[bold]iamwho[/bold] version [cyan]{ver}[/cyan]")
+
 
 @app.command()
 def checks():
@@ -557,6 +619,7 @@ def checks():
         console.print(f"  [cyan]{name}[/cyan] - [bold]{title}[/bold]")
         console.print(f"    [dim]{desc}[/dim]")
         console.print()
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Helpers
@@ -578,6 +641,7 @@ def _serialize_result(result) -> dict:
         return obj
 
     return convert(result)
+
 
 if __name__ == "__main__":
     app()
