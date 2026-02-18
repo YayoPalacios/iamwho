@@ -138,22 +138,34 @@ def analyze_egress(role_arn: str) -> dict[str, Any]:
     for policy in policies:
         policy_name = policy["name"]
         policy_type = policy["type"]
+        policy_arn = policy.get("arn")
         document = policy["document"]
 
         statements = document.get("Statement", [])
         if not isinstance(statements, list):
             statements = [statements]
 
-        for statement in statements:
+        for statement_index, statement in enumerate(statements):
             if statement.get("Effect") != "Allow":
                 continue
-            statement_findings = _analyze_statement(statement, policy_name, policy_type)
+            statement_findings = _analyze_statement(
+                statement,
+                policy_name,
+                policy_type,
+                policy_arn,
+                statement_index,
+            )
             findings.extend(statement_findings)
 
     findings = _deduplicate_findings(findings)
 
     risk_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
-    findings.sort(key=lambda f: risk_order.get(f["risk"], 99))
+    findings.sort(
+        key=lambda f: (
+            risk_order.get(f.get("risk", ""), 99),
+            str(f.get("action", "")),
+        )
+    )
 
     summary = _build_summary(findings)
 
@@ -191,6 +203,7 @@ def _fetch_role_policies(role_name: str) -> list[dict[str, Any]] | str:
                 {
                     "name": policy_name,
                     "type": "inline",
+                    "arn": None,
                     "document": policy_response["PolicyDocument"],
                 }
             )
@@ -231,10 +244,106 @@ def _fetch_role_policies(role_name: str) -> list[dict[str, Any]] | str:
 # =============================================================================
 
 
+def _normalize_resources(resources: list[str]) -> list[str]:
+    """Canonicalize resources for deterministic evidence output."""
+    if not resources:
+        return ["*"]
+    return sorted(set(str(r) for r in resources))
+
+
+def _extract_condition_keys(conditions: dict[str, Any]) -> list[str]:
+    """Extract condition keys from a statement Condition block."""
+    keys: set[str] = set()
+    if not isinstance(conditions, dict):
+        return []
+    for _, body in conditions.items():
+        if isinstance(body, dict):
+            keys.update(str(k) for k in body.keys())
+    return sorted(keys)
+
+
+def _canonicalize_evidence_entry(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Canonicalize evidence dict to ensure deterministic output."""
+    policy_type = str(evidence.get("policy_type", ""))
+    policy_name = str(evidence.get("policy_name", ""))
+
+    policy_arn = evidence.get("policy_arn")
+    if policy_arn is not None:
+        policy_arn = str(policy_arn)
+
+    statement_sid = evidence.get("statement_sid")
+    if statement_sid is not None:
+        statement_sid = str(statement_sid)
+
+    statement_index = int(evidence.get("statement_index", 0))
+
+    normalized_resources = _normalize_resources(
+        [str(r) for r in (evidence.get("normalized_resources") or [])]
+    )
+    condition_keys = sorted(set(str(k) for k in (evidence.get("condition_keys") or [])))
+
+    return {
+        "policy_type": policy_type,
+        "policy_name": policy_name,
+        "policy_arn": policy_arn,
+        "statement_sid": statement_sid,
+        "statement_index": statement_index,
+        "normalized_resources": normalized_resources,
+        "condition_keys": condition_keys,
+    }
+
+
+def _dedupe_and_sort_evidence(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deterministically deduplicate + sort evidence entries."""
+    seen: dict[tuple[Any, ...], dict[str, Any]] = {}
+
+    for item in evidence:
+        ev = _canonicalize_evidence_entry(item)
+        key = (
+            ev["policy_type"],
+            ev["policy_name"],
+            ev["policy_arn"] or "",
+            ev["statement_index"],
+            ev["statement_sid"] or "",
+            tuple(ev["normalized_resources"]),
+            tuple(ev["condition_keys"]),
+        )
+        seen[key] = ev
+
+    return [seen[k] for k in sorted(seen.keys())]
+
+
+def _finding_dedupe_rank(finding: dict[str, Any]) -> tuple[Any, ...]:
+    """Deterministic rank for selecting representative finding during dedupe."""
+    risk_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+    risk_key = risk_order.get(str(finding.get("risk", "")), 99)
+    scope_key = 0 if finding.get("resource_scope") == "ALL" else 1
+    conditions_key = 0 if not finding.get("conditions") else 1
+    via_not_action_key = 0 if not finding.get("via_not_action") else 1
+    source_key = str(finding.get("source", ""))
+
+    resources_key = tuple(
+        _normalize_resources([str(r) for r in (finding.get("resources") or [])])
+    )
+    condition_keys_key = tuple(_extract_condition_keys(finding.get("conditions") or {}))
+
+    return (
+        risk_key,
+        scope_key,
+        conditions_key,
+        via_not_action_key,
+        source_key,
+        resources_key,
+        condition_keys_key,
+    )
+
+
 def _analyze_statement(
     statement: dict[str, Any],
     policy_name: str,
     policy_type: str,
+    policy_arn: str | None,
+    statement_index: int,
 ) -> list[dict[str, Any]]:
     """Analyze a single policy statement for dangerous permissions."""
     findings: list[dict[str, Any]] = []
@@ -257,6 +366,18 @@ def _analyze_statement(
     resource_scope = _determine_resource_scope(resources, not_resources)
     source = f"{policy_type}:{policy_name}"
 
+    evidence = _canonicalize_evidence_entry(
+        {
+            "policy_type": policy_type,
+            "policy_name": policy_name,
+            "policy_arn": policy_arn,
+            "statement_sid": statement.get("Sid"),
+            "statement_index": statement_index,
+            "normalized_resources": resources,
+            "condition_keys": _extract_condition_keys(conditions),
+        }
+    )
+
     for action in actions:
         finding = _assess_action(
             action=action,
@@ -264,6 +385,7 @@ def _analyze_statement(
             resources=resources,
             conditions=conditions,
             source=source,
+            evidence=evidence,
             via_not_action=False,
         )
         if finding:
@@ -276,6 +398,7 @@ def _analyze_statement(
             resources=resources,
             conditions=conditions,
             source=source,
+            evidence=evidence,
         )
         findings.extend(not_action_findings)
 
@@ -300,6 +423,7 @@ def _assess_action(
     resources: list[str],
     conditions: dict[str, Any],
     source: str,
+    evidence: dict[str, Any] | None = None,
     via_not_action: bool = False,
 ) -> dict[str, Any] | None:
     """Assess risk of a single action."""
@@ -350,6 +474,7 @@ def _assess_action(
         "resources": resources,
         "conditions": conditions,
         "source": source,
+        "evidence": [evidence] if evidence else [],
         "via_not_action": via_not_action,
         "via_wildcard_action": via_wildcard,
         "original_action": action,
@@ -362,6 +487,7 @@ def _analyze_not_action(
     resources: list[str],
     conditions: dict[str, Any],
     source: str,
+    evidence: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """Analyze NotAction statements."""
     findings: list[dict[str, Any]] = []
@@ -374,7 +500,7 @@ def _analyze_not_action(
     # We enumerate specific allowed actions below, so exclude "*" from the set.
     # =========================================================================
     all_dangerous = all_dangerous - {"*"}
-    for action in all_dangerous:
+    for action in sorted(all_dangerous):
         if _action_matches_any_pattern(action, excluded_patterns):
             continue
         finding = _assess_action(
@@ -383,6 +509,7 @@ def _analyze_not_action(
             resources=resources,
             conditions=conditions,
             source=source,
+            evidence=evidence,
             via_not_action=True,
         )
         if finding:
@@ -398,6 +525,7 @@ def _analyze_not_action(
                 "resources": resources,
                 "conditions": conditions,
                 "source": source,
+                "evidence": [evidence],
                 "via_not_action": True,
                 "via_wildcard_action": False,
                 "original_action": "NotAction",
@@ -478,21 +606,27 @@ def _get_action_explanation(action: str) -> str:
 
 
 def _deduplicate_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Deduplicate findings by action, keeping highest risk."""
-    seen: dict[str, dict[str, Any]] = {}
-    risk_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+    """Deduplicate findings by action deterministically, merging evidence."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
 
     for finding in findings:
-        action = finding["action"]
-        if action not in seen:
-            seen[action] = finding
-        else:
-            existing_risk = risk_order.get(seen[action]["risk"], 99)
-            new_risk = risk_order.get(finding["risk"], 99)
-            if new_risk < existing_risk:
-                seen[action] = finding
+        action = str(finding.get("action", ""))
+        grouped.setdefault(action, []).append(finding)
 
-    return list(seen.values())
+    deduped: list[dict[str, Any]] = []
+
+    for action, group in grouped.items():
+        merged_evidence: list[dict[str, Any]] = []
+        for f in group:
+            merged_evidence.extend(f.get("evidence") or [])
+        merged_evidence = _dedupe_and_sort_evidence(merged_evidence)
+
+        best = min(group, key=_finding_dedupe_rank)
+        best_finding = dict(best)
+        best_finding["evidence"] = merged_evidence
+        deduped.append(best_finding)
+
+    return deduped
 
 
 def _build_summary(findings: list[dict[str, Any]]) -> dict[str, Any]:
