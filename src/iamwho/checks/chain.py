@@ -30,6 +30,9 @@ def walk(
     ``max_depth`` are not walked either, but unlike a cycle this is a real
     limitation of the scan: the node reports ``truncated: True`` and lists
     those targets under ``unexplored`` rather than silently dropping them.
+    A PassRole/AssumeRole grant to a wildcarded resource (e.g. role/app-*)
+    can't be resolved to a specific role at all; those are listed under
+    ``unresolved_targets`` instead of just vanishing from the target list.
     """
     if visited is None:
         visited = set()
@@ -41,8 +44,10 @@ def walk(
     )
 
     targets: set[str] = set()
+    unresolved_targets: set[str] = set()
     for finding in findings:
         targets.update(egress._resolve_hop_targets(finding))
+        unresolved_targets.update(egress._unresolved_hop_targets(finding))
 
     unvisited_targets = sorted(target for target in targets if target not in visited)
 
@@ -63,6 +68,7 @@ def walk(
         "truncated": bool(unexplored),
         "max_depth": max_depth,
         "unexplored": unexplored,
+        "unresolved_targets": sorted(unresolved_targets),
     }
 
 

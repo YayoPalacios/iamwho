@@ -7,7 +7,7 @@ targets, bounded by max_depth.
 """
 
 from iamwho.checks import chain
-from iamwho.checks.egress import _resolve_hop_targets
+from iamwho.checks.egress import _resolve_hop_targets, _unresolved_hop_targets
 
 from .conftest import allow, role_arn
 
@@ -76,6 +76,34 @@ def test_targets_are_deduped_and_sorted_across_evidence_entries():
 
 def test_missing_evidence_resolves_nothing():
     assert _resolve_hop_targets({"action": "iam:PassRole"}) == []
+
+
+def test_globbed_role_resource_is_reported_as_unresolved():
+    glob = f"{ADMIN_ARN[:-2]}*"
+    finding = _finding("iam:PassRole", [_evidence([glob])])
+
+    assert _resolve_hop_targets(finding) == []
+    assert _unresolved_hop_targets(finding) == [glob]
+
+
+def test_bare_wildcard_is_reported_as_unresolved():
+    finding = _finding("iam:PassRole", [_evidence(["*"])])
+
+    assert _unresolved_hop_targets(finding) == ["*"]
+
+
+def test_unrelated_resource_type_is_not_reported_as_unresolved():
+    """A non-role resource on a PassRole statement isn't a skipped hop -
+    it never referred to a role in the first place."""
+    finding = _finding("iam:PassRole", [_evidence(["arn:aws:s3:::bucket/*"])])
+
+    assert _unresolved_hop_targets(finding) == []
+
+
+def test_non_hop_action_reports_no_unresolved_targets():
+    finding = _finding("s3:GetObject", [_evidence(["*"])])
+
+    assert _unresolved_hop_targets(finding) == []
 
 
 # =============================================================================
@@ -153,6 +181,22 @@ def test_walk_visited_guard_stops_a_cycle(iam):
     assert result["hops"][0]["role_arn"] == b_arn
     # B's PassRole back to A is a cycle: A is already visited, so it's not re-walked.
     assert result["hops"][0]["hops"] == []
+
+
+def test_walk_records_a_skipped_wildcard_target_as_unresolved(iam):
+    """A PassRole grant to role/app-* can't be resolved to a specific role;
+    it must show up as unresolved, not just vanish from the target list."""
+    glob_arn = role_arn("app-*")
+    start = iam.add_role(
+        "Start", inline={"p": {"Statement": [allow("iam:PassRole", glob_arn)]}}
+    )
+
+    result = chain.walk(start)
+
+    assert result["hops"] == []
+    assert result["truncated"] is False
+    assert result["unexplored"] == []
+    assert result["unresolved_targets"] == [glob_arn]
 
 
 # =============================================================================
