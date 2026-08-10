@@ -6,13 +6,19 @@ Before ``checks/_client.py`` existed, each check built its own
 tests below fail against that behavior.
 """
 
+import json
+
 import boto3
 import pytest
+from typer.testing import CliRunner
 
 from iamwho.checks import _client, egress
 from iamwho.checks.privilege_mutation import analyze_privilege_mutation
+from iamwho.cli import app
 
 from .conftest import allow
+
+runner = CliRunner()
 
 # =============================================================================
 # PAGINATION
@@ -161,6 +167,32 @@ def test_mutation_still_fetches_when_called_standalone(iam):
 
     assert mutation["status"] == "success"
     assert iam.count("list_role_policies") == 1
+
+
+def test_standalone_mutation_check_finds_the_same_escalation_as_check_all(iam):
+    """`--check mutation` alone must surface the same findings as `--check all`.
+
+    If mutation ever went back to requiring a caller-supplied egress_result
+    (the double-fetch fix's failure mode), a standalone `--check mutation`
+    run would come back empty while `--check all` still found the real
+    escalation.
+    """
+    arn = iam.add_role(
+        "Agent",
+        inline={"p": {"Statement": [allow(["iam:PassRole", "lambda:CreateFunction"])]}},
+    )
+
+    standalone = runner.invoke(app, ["analyze", arn, "--json", "--check", "mutation"])
+    combined = runner.invoke(app, ["analyze", arn, "--json", "--check", "all"])
+
+    standalone_mutation = json.loads(standalone.output)["checks"]["mutation"]
+    combined_mutation = json.loads(combined.output)["checks"]["mutation"]
+
+    assert standalone_mutation == combined_mutation
+    assert standalone_mutation["overall_risk"] == "CRITICAL"
+    assert standalone_mutation["findings"], (
+        "expected the known PassRole+CreateFunction combo"
+    )
 
 
 # =============================================================================
