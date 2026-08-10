@@ -115,15 +115,13 @@ def analyze_egress(role_arn: str) -> dict[str, Any]:
 
     role_name = _extract_role_name(role_arn)
     if not role_name:
-        return {
-            "status": "error",
-            "message": f"Could not extract role name from ARN: {role_arn}",
-        }
+        message = f"Could not extract role name from ARN: {role_arn}"
+        return {"status": "error", "message": message, "error": message}
 
     try:
         policies = _client.get_role_policies(role_arn)
     except _client.IamFetchError as e:
-        return {"status": "error", "message": e.message}
+        return {"status": "error", "message": e.message, "error": e.message}
 
     if not policies:
         return {

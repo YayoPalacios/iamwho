@@ -20,6 +20,7 @@ import pytest
 from botocore.exceptions import NoCredentialsError
 from typer.testing import CliRunner
 
+from iamwho.checks.egress import analyze_egress
 from iamwho.cli import app, calculate_exit_code, check_error, normalize_egress_findings
 
 from .conftest import allow
@@ -56,6 +57,24 @@ def test_ingress_error_shape_is_detected():
 def test_successful_results_are_not_treated_as_errors():
     assert check_error({"status": "success", "findings": []}) is None
     assert check_error(None) is None
+
+
+def test_egress_fetch_failure_populates_both_message_and_error(iam):
+    """AGENTS.md requires both keys on an error return; egress set only message."""
+    arn = iam.add_role("Denied", inline={"p": ADMIN})
+    iam.fail("list_role_policies", "AccessDenied")
+
+    result = analyze_egress(arn)
+
+    assert result["status"] == "error"
+    assert result["error"] == result["message"]
+
+
+def test_egress_unresolvable_role_name_populates_both_message_and_error():
+    result = analyze_egress("arn:aws:iam::123456789012:role/")
+
+    assert result["status"] == "error"
+    assert result["error"] == result["message"]
 
 
 # =============================================================================
