@@ -33,6 +33,11 @@ class RiskLevel(Enum):
             return NotImplemented
         return self.value == other.value
 
+    def __hash__(self) -> int:
+        # Defining __eq__ sets __hash__ to None, which makes the enum
+        # unusable in sets and as a dict key.
+        return hash(self.value)
+
 
 class AssumeType(Enum):
     """STS assume action classification."""
