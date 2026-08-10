@@ -17,6 +17,7 @@ the output mode CI uses.
 import json
 
 import pytest
+from botocore.exceptions import NoCredentialsError
 from typer.testing import CliRunner
 
 from iamwho.cli import app, calculate_exit_code, check_error, normalize_egress_findings
@@ -189,6 +190,40 @@ def test_json_output_remains_parseable_with_errors(iam):
     result = run(arn, "--check", "all", "--json")
 
     json.loads(result.output)  # must not raise
+
+
+def test_json_stays_valid_when_an_unexpected_exception_escapes_a_check(iam):
+    """A non-ClientError (e.g. missing credentials) used to print a Rich
+    error to stdout instead of the JSON envelope, corrupting --json output.
+    """
+    arn = iam.add_role("Agent", inline={"p": {"Statement": [allow("s3:GetObject")]}})
+    iam.raise_exception("get_role", NoCredentialsError())
+
+    result = run(arn, "--check", "ingress", "--json")
+    payload = json.loads(result.output)  # must not raise
+
+    assert result.exit_code != 0
+    assert payload["errors"] == [
+        {"check": "fatal", "message": "Unable to locate credentials"}
+    ]
+
+
+def test_json_stays_valid_for_an_invalid_arn():
+    result = run("not-an-arn", "--json")
+    payload = json.loads(result.output)  # must not raise
+
+    assert result.exit_code != 0
+    assert payload["errors"][0]["check"] == "validation"
+
+
+def test_json_stays_valid_for_an_invalid_check_type(iam):
+    arn = iam.add_role("Agent")
+
+    result = run(arn, "--check", "bogus", "--json")
+    payload = json.loads(result.output)  # must not raise
+
+    assert result.exit_code != 0
+    assert payload["errors"][0]["check"] == "validation"
 
 
 # =============================================================================

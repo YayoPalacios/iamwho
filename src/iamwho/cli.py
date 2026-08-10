@@ -535,6 +535,28 @@ def calculate_exit_code(all_findings: list[dict], fail_on: Optional[str]) -> int
     return 0
 
 
+def _emit_json_error(
+    principal_arn: str,
+    checks: dict,
+    error_check: str,
+    message: str,
+    exit_code: int,
+) -> None:
+    """Emit the same JSON envelope shape as a normal --json run, then exit.
+
+    Used on validation/exception paths that occur outside the check loop, so
+    --json never emits Rich-formatted text in place of JSON (see the payload
+    path below for why console.print/print_exception is unsafe here).
+    """
+    output = {
+        "principal_arn": principal_arn,
+        "checks": checks,
+        "errors": [{"check": error_check, "message": message}],
+    }
+    print(json.dumps(output, indent=2, default=str))
+    raise typer.Exit(code=exit_code)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CLI Commands
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -567,6 +589,14 @@ def analyze(
         iamwho analyze arn:aws:iam::123456789012:role/MyRole --fail-on high
     """
     if not is_valid_arn(principal_arn):
+        if output_json:
+            _emit_json_error(
+                principal_arn,
+                {},
+                "validation",
+                f"Invalid ARN format: {principal_arn}",
+                1,
+            )
         console.print(
             f"\n[red bold]Error:[/red bold] Invalid ARN format: {principal_arn}\n"
         )
@@ -574,6 +604,10 @@ def analyze(
 
     check = check.lower()
     if check not in {"ingress", "egress", "mutation", "all"}:
+        if output_json:
+            _emit_json_error(
+                principal_arn, {}, "validation", f"Invalid check type: {check}", 1
+            )
         console.print(f"\n[red bold]Error:[/red bold] Invalid check type: {check}\n")
         raise typer.Exit(code=1)
 
@@ -621,6 +655,8 @@ def analyze(
                 json_results["mutation"] = result
 
     except Exception as e:
+        if output_json:
+            _emit_json_error(principal_arn, json_results, "fatal", str(e), 1)
         console.print(f"\n[red bold]Error:[/red bold] {e}\n")
         if verbose:
             console.print_exception()

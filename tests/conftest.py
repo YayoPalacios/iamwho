@@ -53,6 +53,7 @@ class FakeIamClient:
         self.attached_policies: dict[str, list[str]] = {}
         self.managed_policies: dict[str, dict[str, Any]] = {}
         self.errors: dict[str, str] = {}
+        self.exceptions: dict[str, Exception] = {}
 
     # -- fixture construction ------------------------------------------------
 
@@ -80,6 +81,14 @@ class FakeIamClient:
         """Make ``operation`` raise a ClientError with ``code``."""
         self.errors[operation] = code
 
+    def raise_exception(self, operation: str, exc: Exception) -> None:
+        """Make ``operation`` raise an arbitrary, non-ClientError exception.
+
+        For simulating failures the checks don't translate to IamFetchError,
+        e.g. botocore.exceptions.NoCredentialsError.
+        """
+        self.exceptions[operation] = exc
+
     def count(self, operation: str) -> int:
         return self.calls.count(operation)
 
@@ -87,6 +96,9 @@ class FakeIamClient:
 
     def _record(self, operation: str) -> None:
         self.calls.append(operation)
+        exc = self.exceptions.get(operation)
+        if exc:
+            raise exc
         code = self.errors.get(operation)
         if code:
             raise ClientError(
