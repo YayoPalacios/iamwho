@@ -90,6 +90,48 @@ def test_chain_fetch_failure_populates_both_message_and_error(iam):
     assert check_error(result) == result["message"]
 
 
+def test_check_error_finds_a_downstream_hop_failure_not_just_the_root():
+    """A chain walk's top-level status only reflects the starting role; an
+    error on a hop deeper in the tree must still be detected."""
+    result = {
+        "role_arn": "arn:aws:iam::123456789012:role/Start",
+        "status": "success",
+        "hops": [
+            {
+                "role_arn": "arn:aws:iam::123456789012:role/Target",
+                "status": "error",
+                "message": "Access denied fetching policies for: Target",
+                "hops": [],
+            }
+        ],
+    }
+
+    assert check_error(result) == "Access denied fetching policies for: Target"
+
+
+def test_chain_walk_downstream_hop_failure_gates_the_exit_code(iam):
+    """A role reached via PassRole that couldn't be read must still fail the
+    check closed, even though the starting role read fine."""
+    policy_arn = iam.add_managed_policy("p", ADMIN)
+    target = iam.add_role("Target", attached=[policy_arn])
+    start = iam.add_role(
+        "Start", inline={"p": {"Statement": [allow("iam:PassRole", target)]}}
+    )
+    iam.fail("get_policy", "AccessDenied")
+    expected_message = f"Access denied fetching policy: {policy_arn}"
+
+    result = chain_walk(start)
+
+    assert result["status"] == "success"  # the root itself read fine
+    assert check_error(result) == expected_message
+
+    cli_result = run(start, "--check", "chain", "--json")
+    payload = json.loads(cli_result.output)
+
+    assert cli_result.exit_code != 0
+    assert payload["errors"] == [{"check": "chain", "message": expected_message}]
+
+
 # =============================================================================
 # FAIL-OPEN
 # =============================================================================
