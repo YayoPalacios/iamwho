@@ -106,6 +106,25 @@ def _build_node(
     }
 
 
+def _collect_paths(node: dict[str, Any]) -> list[list[str]]:
+    """List every root-to-terminal path of role ARNs through the walk's
+    tree, one per node with no further hops.
+
+    Since the tree already embeds each role exactly once, at its shortest
+    depth (see _build_node), this is a plain traversal - a role reachable
+    by a second, longer path only ever appears in the path of its shorter
+    one.
+    """
+    if not node["hops"]:
+        return [[node["role_arn"]]]
+
+    return [
+        [node["role_arn"], *sub_path]
+        for hop in node["hops"]
+        for sub_path in _collect_paths(hop)
+    ]
+
+
 def walk(
     role_arn: str,
     depth: int = 0,
@@ -130,12 +149,19 @@ def walk(
     AssumeRole grant to a wildcarded resource (e.g. role/app-*) can't be
     resolved to a specific role at all; those are listed under
     ``unresolved_targets`` instead of just vanishing from the target list.
+
+    The returned dict also carries a top-level ``paths`` field: a flat
+    list of role-ARN lists, one per distinct path from ``role_arn`` to
+    each terminal node in the tree above - a derived summary alongside
+    the tree, not a restructuring of it.
     """
     if visited is None:
         visited = set()
 
     depths = _shortest_depths(role_arn, depth, max_depth, visited)
-    return _build_node(role_arn, depth, max_depth, depths, set(visited))
+    result = _build_node(role_arn, depth, max_depth, depths, set(visited))
+    result["paths"] = _collect_paths(result)
+    return result
 
 
 # =============================================================================

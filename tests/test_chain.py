@@ -284,6 +284,40 @@ def test_walk_reports_a_diamond_target_at_the_in_cap_depth(iam):
     assert iam.count("list_role_policies") == 5  # Start,A,B,C,Target each once
 
 
+def test_walk_paths_follow_the_shortest_resolved_route(iam):
+    """Same diamond as above: Target's real path is via A (depth 2), not
+    via B -> C (depth 3). The top-level `paths` field must reflect that -
+    ["Start", "A", "Target"] and ["Start", "B", "C"], never
+    ["Start", "B", "C", "Target"]."""
+    target_arn = iam.add_role(
+        "Target", inline={"p": {"Statement": [allow("s3:ListBucket")]}}
+    )
+    a_arn = iam.add_role(
+        "A", inline={"p": {"Statement": [allow("iam:PassRole", target_arn)]}}
+    )
+    c_arn = iam.add_role(
+        "C", inline={"p": {"Statement": [allow("iam:PassRole", target_arn)]}}
+    )
+    b_arn = iam.add_role(
+        "B", inline={"p": {"Statement": [allow("iam:PassRole", c_arn)]}}
+    )
+    start_arn = iam.add_role(
+        "Start",
+        inline={"p": {"Statement": [allow("iam:PassRole", [a_arn, b_arn])]}},
+    )
+
+    result = chain.walk(start_arn)  # max_depth defaults to 2
+
+    assert result["paths"] == [
+        [start_arn, a_arn, target_arn],
+        [start_arn, b_arn, c_arn],
+    ]
+    assert [start_arn, b_arn, c_arn, target_arn] not in result["paths"]
+
+    # `paths` is a top-level summary, not part of the tree itself.
+    assert "paths" not in result["hops"][0]
+
+
 # =============================================================================
 # AGENT-IDENTITY FIXTURES
 # =============================================================================
