@@ -3,9 +3,7 @@
 
 from typing import Any
 
-import boto3
-from botocore.exceptions import ClientError
-
+from iamwho.checks import _client
 from iamwho.models import (
     AssumeType,
     ConditionAnalysis,
@@ -29,13 +27,10 @@ def analyze_ingress(role_arn: str) -> IngressResult:
         result.error = f"Invalid role ARN format: {role_arn}"
         return result
 
-    trust_policy = _fetch_trust_policy(role_name)
-    if trust_policy is None:
-        result.error = f"Could not fetch trust policy for {role_name}"
-        return result
-
-    if isinstance(trust_policy, str):
-        result.error = trust_policy
+    try:
+        trust_policy = _client.get_trust_policy(role_arn)
+    except _client.IamFetchError as e:
+        result.error = e.message
         return result
 
     statements = trust_policy.get("Statement", [])
@@ -59,32 +54,7 @@ def analyze_ingress(role_arn: str) -> IngressResult:
 # =============================================================================
 
 
-def _extract_role_name(role_arn: str) -> str | None:
-    """Extract role name from ARN."""
-    if ":role/" not in role_arn:
-        return None
-    try:
-        role_path = role_arn.split(":role/")[1]
-        return role_path.split("/")[-1]
-    except IndexError:
-        return None
-
-
-def _fetch_trust_policy(role_name: str) -> dict[str, Any] | str | None:
-    """Fetch trust policy from AWS."""
-    try:
-        iam = boto3.client("iam")
-        response = iam.get_role(RoleName=role_name)
-        return response["Role"]["AssumeRolePolicyDocument"]
-    except ClientError as e:
-        code = e.response["Error"]["Code"]
-        if code == "NoSuchEntity":
-            return f"Role not found: {role_name}"
-        if code == "AccessDenied":
-            return f"Access denied fetching role: {role_name}"
-        return f"AWS error: {code}"
-    except Exception as e:
-        return f"Unexpected error: {e}"
+_extract_role_name = _client.extract_role_name
 
 
 def _analyze_statement(statement: dict[str, Any]) -> list[TrustFinding]:

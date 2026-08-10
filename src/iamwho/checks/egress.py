@@ -11,8 +11,7 @@ Security Focus:
 
 from typing import Any
 
-import boto3
-from botocore.exceptions import ClientError
+from iamwho.checks import _client
 
 # =============================================================================
 # DANGEROUS ACTION PATTERNS
@@ -121,9 +120,10 @@ def analyze_egress(role_arn: str) -> dict[str, Any]:
             "message": f"Could not extract role name from ARN: {role_arn}",
         }
 
-    policies = _fetch_role_policies(role_name)
-    if isinstance(policies, str):
-        return {"status": "error", "message": policies}
+    try:
+        policies = _client.get_role_policies(role_arn)
+    except _client.IamFetchError as e:
+        return {"status": "error", "message": e.message}
 
     if not policies:
         return {
@@ -177,66 +177,7 @@ def analyze_egress(role_arn: str) -> dict[str, Any]:
 # =============================================================================
 
 
-def _extract_role_name(role_arn: str) -> str | None:
-    """Extract role name from ARN."""
-    if ":role/" not in role_arn:
-        return None
-    try:
-        role_path = role_arn.split(":role/")[1]
-        return role_path.split("/")[-1]
-    except IndexError:
-        return None
-
-
-def _fetch_role_policies(role_name: str) -> list[dict[str, Any]] | str:
-    """Fetch all policies (inline + attached) for a role."""
-    try:
-        iam = boto3.client("iam")
-        policies: list[dict[str, Any]] = []
-
-        inline_response = iam.list_role_policies(RoleName=role_name)
-        for policy_name in inline_response.get("PolicyNames", []):
-            policy_response = iam.get_role_policy(
-                RoleName=role_name, PolicyName=policy_name
-            )
-            policies.append(
-                {
-                    "name": policy_name,
-                    "type": "inline",
-                    "arn": None,
-                    "document": policy_response["PolicyDocument"],
-                }
-            )
-
-        attached_response = iam.list_attached_role_policies(RoleName=role_name)
-        for policy in attached_response.get("AttachedPolicies", []):
-            policy_arn = policy["PolicyArn"]
-            policy_name = policy["PolicyName"]
-            policy_info = iam.get_policy(PolicyArn=policy_arn)
-            version_id = policy_info["Policy"]["DefaultVersionId"]
-            version_response = iam.get_policy_version(
-                PolicyArn=policy_arn, VersionId=version_id
-            )
-            policies.append(
-                {
-                    "name": policy_name,
-                    "type": "managed",
-                    "arn": policy_arn,
-                    "document": version_response["PolicyVersion"]["Document"],
-                }
-            )
-
-        return policies
-
-    except ClientError as e:
-        code = e.response["Error"]["Code"]
-        if code == "NoSuchEntity":
-            return f"Role not found: {role_name}"
-        if code == "AccessDenied":
-            return f"Access denied fetching policies for: {role_name}"
-        return f"AWS error: {code}"
-    except Exception as e:
-        return f"Unexpected error: {e}"
+_extract_role_name = _client.extract_role_name
 
 
 # =============================================================================
@@ -294,6 +235,8 @@ def _canonicalize_evidence_entry(evidence: dict[str, Any]) -> dict[str, Any]:
         "normalized_resources": normalized_resources,
         "condition_keys": condition_keys,
     }
+
+
 def _dedupe_and_sort_evidence(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Deterministically deduplicate + sort evidence entries."""
     seen: dict[tuple[Any, ...], dict[str, Any]] = {}

@@ -50,6 +50,7 @@ SEVERITY_TEXT_STYLES = {
 SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "PASS"]
 VALID_FAIL_ON = {"critical", "high", "medium", "low", "any"}
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Severity Helpers
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -241,6 +242,7 @@ def print_finding(finding: dict, verbose: bool = False):
                 bullet.append(label, style="cyan")
                 console.print(bullet)
 
+
 def print_no_findings(message: str = "No findings detected"):
     """Print a no-findings message."""
     text = Text()
@@ -249,7 +251,9 @@ def print_no_findings(message: str = "No findings detected"):
     console.print(text)
 
 
-def print_summary(ingress_findings: list, egress_findings: list, mutation_findings: list):
+def print_summary(
+    ingress_findings: list, egress_findings: list, mutation_findings: list
+):
     """Print the summary table with better spacing and organization."""
     console.print()
     console.print("━" * 60, style="bold")
@@ -333,7 +337,9 @@ def normalize_ingress_findings(result) -> list[dict]:
                 "action": str(assume_type) if assume_type else "",
                 "description": str(description),
                 "is_combo": False,
-                "conditions": getattr(getattr(f, "conditions", None), "raw_conditions", {}),
+                "conditions": getattr(
+                    getattr(f, "conditions", None), "raw_conditions", {}
+                ),
             }
         )
 
@@ -477,7 +483,9 @@ def calculate_exit_code(all_findings: list[dict], fail_on: Optional[str]) -> int
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.command()
 def analyze(
-    principal_arn: str = typer.Argument(..., help="AWS IAM Role or User ARN to analyze"),
+    principal_arn: str = typer.Argument(
+        ..., help="AWS IAM Role or User ARN to analyze"
+    ),
     check: str = typer.Option(
         "all", "--check", "-c", help="Check type: ingress, egress, mutation, or all"
     ),
@@ -502,7 +510,9 @@ def analyze(
         iamwho analyze arn:aws:iam::123456789012:role/MyRole --fail-on high
     """
     if not is_valid_arn(principal_arn):
-        console.print(f"\n[red bold]Error:[/red bold] Invalid ARN format: {principal_arn}\n")
+        console.print(
+            f"\n[red bold]Error:[/red bold] Invalid ARN format: {principal_arn}\n"
+        )
         raise typer.Exit(code=1)
 
     check = check.lower()
@@ -512,6 +522,7 @@ def analyze(
 
     ingress_findings, egress_findings, mutation_findings = [], [], []
     json_results = {}
+    egress_result = None
 
     try:
         if check in ("ingress", "all"):
@@ -525,15 +536,19 @@ def analyze(
         if check in ("egress", "all"):
             from iamwho.checks.egress import analyze_egress
 
-            result = analyze_egress(principal_arn)
-            egress_findings = normalize_egress_findings(result)
+            egress_result = analyze_egress(principal_arn)
+            egress_findings = normalize_egress_findings(egress_result)
             if output_json:
-                json_results["egress"] = result
+                json_results["egress"] = egress_result
 
         if check in ("mutation", "all"):
             from iamwho.checks.privilege_mutation import analyze_privilege_mutation
 
-            result = analyze_privilege_mutation(principal_arn)
+            # Reuse the egress result when both checks run, so the role's
+            # policies are fetched and analyzed once instead of twice.
+            result = analyze_privilege_mutation(
+                principal_arn, egress_result=egress_result
+            )
             mutation_findings = normalize_mutation_findings(result)
             if output_json:
                 json_results["mutation"] = result
@@ -584,7 +599,9 @@ def analyze(
     exit_code = calculate_exit_code(all_findings, fail_on)
 
     if exit_code != 0 and fail_on:
-        console.print(f"[dim]Exiting with code {exit_code} (--fail-on {fail_on})[/dim]\n")
+        console.print(
+            f"[dim]Exiting with code {exit_code} (--fail-on {fail_on})[/dim]\n"
+        )
 
     raise typer.Exit(code=exit_code)
 
