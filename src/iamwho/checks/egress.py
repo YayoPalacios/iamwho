@@ -610,8 +610,11 @@ def _partition_hop_resources(finding: dict[str, Any]) -> tuple[list[str], list[s
     bare "*" or something containing ":role/". Among those, a wildcarded one
     (including the bare "*") can't be resolved to a specific role without
     enumerating the account, which this tool never does - it's unresolved,
-    not silently dropped. Anything else (an unrelated resource type on a
-    PassRole/AssumeRole statement) has no bearing on the chain walk.
+    not silently dropped. IAM's policy language has two wildcard characters,
+    "*" (any sequence) and "?" (any single character), and either one makes
+    a resource unresolvable the same way. Anything else (an unrelated
+    resource type on a PassRole/AssumeRole statement) has no bearing on the
+    chain walk.
     """
     if finding.get("action") not in HOP_ACTIONS:
         return [], []
@@ -629,7 +632,7 @@ def _partition_hop_resources(finding: dict[str, Any]) -> tuple[list[str], list[s
             looks_like_role = resource == "*" or ":role/" in resource
             if not looks_like_role:
                 continue
-            if "*" in resource:
+            if "*" in resource or "?" in resource:
                 unresolved.add(resource)
             else:
                 resolved.add(resource)

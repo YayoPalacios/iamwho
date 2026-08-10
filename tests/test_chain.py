@@ -86,6 +86,16 @@ def test_globbed_role_resource_is_reported_as_unresolved():
     assert _unresolved_hop_targets(finding) == [glob]
 
 
+def test_question_mark_wildcard_role_resource_is_reported_as_unresolved():
+    """The ? character is IAM's single-character wildcard, same as * for
+    any sequence - a resource ending in ? can't be resolved either."""
+    glob = f"{ADMIN_ARN}?"
+    finding = _finding("iam:PassRole", [_evidence([glob])])
+
+    assert _resolve_hop_targets(finding) == []
+    assert _unresolved_hop_targets(finding) == [glob]
+
+
 def test_bare_wildcard_is_reported_as_unresolved():
     finding = _finding("iam:PassRole", [_evidence(["*"])])
 
