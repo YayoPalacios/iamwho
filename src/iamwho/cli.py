@@ -823,6 +823,11 @@ def checks():
         ("ingress", "Trust Policy Analysis", "Who/what can assume this role"),
         ("egress", "Permission Analysis", "What the principal can do"),
         ("mutation", "Privilege Escalation", "Paths to escalate privileges"),
+        (
+            "chain",
+            "Chain Walk",
+            "PassRole/AssumeRole reachability (opt-in, requires --json)",
+        ),
     ]
 
     for name, title, desc in info:
