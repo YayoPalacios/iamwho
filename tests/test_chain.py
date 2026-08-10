@@ -199,6 +199,32 @@ def test_walk_records_a_skipped_wildcard_target_as_unresolved(iam):
     assert result["unresolved_targets"] == [glob_arn]
 
 
+def test_walk_reports_a_shared_target_at_its_shortest_depth(iam):
+    """Target is reachable directly from Start (1 hop) and via Mid (2 hops).
+    It must be reported once, at the shorter depth, regardless of which
+    path the traversal considers first."""
+    target_arn = iam.add_role(
+        "Target", inline={"p": {"Statement": [allow("s3:ListBucket")]}}
+    )
+    mid_arn = iam.add_role(
+        "Mid", inline={"p": {"Statement": [allow("iam:PassRole", target_arn)]}}
+    )
+    start_arn = iam.add_role(
+        "Start",
+        inline={"p": {"Statement": [allow("iam:PassRole", [mid_arn, target_arn])]}},
+    )
+
+    result = chain.walk(start_arn)
+
+    occurrences = [
+        node["depth"] for node in _flatten(result) if node["role_arn"] == target_arn
+    ]
+    assert occurrences == [1]  # reported exactly once, at the shortest depth
+
+    mid_node = next(n for n in _flatten(result) if n["role_arn"] == mid_arn)
+    assert mid_node["hops"] == []  # not re-embedded as Mid's child
+
+
 # =============================================================================
 # AGENT-IDENTITY FIXTURES
 # =============================================================================
