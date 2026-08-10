@@ -251,6 +251,19 @@ def print_no_findings(message: str = "No findings detected"):
     console.print(text)
 
 
+def print_check_error(message: str):
+    """Print a check failure.
+
+    A check that could not read AWS has not found nothing; it has found
+    nothing out. Never render this as a clean result.
+    """
+    text = Text()
+    text.append("  x ", style="red bold")
+    text.append("Check failed: ", style="red bold")
+    text.append(message, style="red")
+    console.print(text)
+
+
 def print_summary(
     ingress_findings: list, egress_findings: list, mutation_findings: list
 ):
@@ -306,10 +319,33 @@ def print_summary(
 # ═══════════════════════════════════════════════════════════════════════════════
 # Result Normalizers
 # ═══════════════════════════════════════════════════════════════════════════════
+def check_error(result) -> Optional[str]:
+    """Return a check's error message, or None if the check succeeded.
+
+    Checks report failure in two shapes: ingress returns a dataclass with an
+    `error` attribute, egress and mutation return a dict with status "error"
+    and the detail under `message`. Detection lives here so that no caller can
+    match one shape and miss the other, which is how a failed check used to be
+    rendered as zero findings.
+    """
+    if result is None:
+        return None
+
+    error = getattr(result, "error", None)
+    if isinstance(error, str) and error:
+        return error
+
+    if isinstance(result, dict) and result.get("status") == "error":
+        message = result.get("message") or result.get("error")
+        return str(message) if message else "Unknown error"
+
+    return None
+
+
 def normalize_ingress_findings(result) -> list[dict]:
     """Convert IngressResult dataclass to list of finding dicts."""
     findings = []
-    if hasattr(result, "error") and result.error:
+    if check_error(result):
         return []
 
     raw_findings = getattr(result, "findings", [])
@@ -351,7 +387,7 @@ def normalize_egress_findings(result) -> list[dict]:
     if not isinstance(result, dict):
         return []
 
-    if "error" in result:
+    if check_error(result):
         return []
 
     findings = []
@@ -379,7 +415,7 @@ def normalize_mutation_findings(result) -> list[dict]:
     if not isinstance(result, dict):
         return []
 
-    if "error" in result:
+    if check_error(result):
         return []
 
     findings = []
@@ -522,6 +558,7 @@ def analyze(
 
     ingress_findings, egress_findings, mutation_findings = [], [], []
     json_results = {}
+    check_errors: dict[str, str] = {}
     egress_result = None
 
     try:
@@ -529,6 +566,9 @@ def analyze(
             from iamwho.checks.ingress import analyze_ingress
 
             result = analyze_ingress(principal_arn)
+            error = check_error(result)
+            if error:
+                check_errors["ingress"] = error
             ingress_findings = normalize_ingress_findings(result)
             if output_json:
                 json_results["ingress"] = _serialize_result(result)
@@ -537,6 +577,9 @@ def analyze(
             from iamwho.checks.egress import analyze_egress
 
             egress_result = analyze_egress(principal_arn)
+            error = check_error(egress_result)
+            if error:
+                check_errors["egress"] = error
             egress_findings = normalize_egress_findings(egress_result)
             if output_json:
                 json_results["egress"] = egress_result
@@ -549,6 +592,9 @@ def analyze(
             result = analyze_privilege_mutation(
                 principal_arn, egress_result=egress_result
             )
+            error = check_error(result)
+            if error:
+                check_errors["mutation"] = error
             mutation_findings = normalize_mutation_findings(result)
             if output_json:
                 json_results["mutation"] = result
@@ -559,44 +605,77 @@ def analyze(
             console.print_exception()
         raise typer.Exit(code=1)
 
+    all_findings = ingress_findings + egress_findings + mutation_findings
+    exit_code = calculate_exit_code(all_findings, fail_on)
+
+    # A check that could not read AWS must never exit 0: in a CI gate that is
+    # indistinguishable from a clean result.
+    if check_errors:
+        exit_code = max(exit_code, 1)
+
     if output_json:
-        output = {"principal_arn": principal_arn, "checks": json_results}
+        output = {
+            "principal_arn": principal_arn,
+            "checks": json_results,
+            "errors": [
+                {"check": name, "message": message}
+                for name, message in sorted(check_errors.items())
+            ],
+        }
         console.print(json.dumps(output, indent=2, default=str))
-        raise typer.Exit(code=0)
+        raise typer.Exit(code=exit_code)
 
     if not no_banner:
         print_banner()
 
     print_target(principal_arn)
 
-    if check in ("ingress", "all"):
-        print_section_header("INGRESS", "Who can assume this role?", "cyan")
-        if ingress_findings:
-            for finding in ingress_findings:
-                print_finding(finding, verbose=verbose)
-        else:
-            print_no_findings("No risky trust relationships detected")
+    sections = [
+        (
+            "ingress",
+            "INGRESS",
+            "Who can assume this role?",
+            "cyan",
+            ingress_findings,
+            "No risky trust relationships detected",
+        ),
+        (
+            "egress",
+            "EGRESS",
+            "What can this role do?",
+            "yellow",
+            egress_findings,
+            "No dangerous permissions detected",
+        ),
+        (
+            "mutation",
+            "MUTATION",
+            "How could privileges escalate?",
+            "magenta",
+            mutation_findings,
+            "No escalation paths detected",
+        ),
+    ]
 
-    if check in ("egress", "all"):
-        print_section_header("EGRESS", "What can this role do?", "yellow")
-        if egress_findings:
-            for finding in egress_findings:
+    for name, title, subtitle, color, findings, empty_message in sections:
+        if check not in (name, "all"):
+            continue
+        print_section_header(title, subtitle, color)
+        if name in check_errors:
+            print_check_error(check_errors[name])
+        elif findings:
+            for finding in findings:
                 print_finding(finding, verbose=verbose)
         else:
-            print_no_findings("No dangerous permissions detected")
-
-    if check in ("mutation", "all"):
-        print_section_header("MUTATION", "How could privileges escalate?", "magenta")
-        if mutation_findings:
-            for finding in mutation_findings:
-                print_finding(finding, verbose=verbose)
-        else:
-            print_no_findings("No escalation paths detected")
+            print_no_findings(empty_message)
 
     print_summary(ingress_findings, egress_findings, mutation_findings)
 
-    all_findings = ingress_findings + egress_findings + mutation_findings
-    exit_code = calculate_exit_code(all_findings, fail_on)
+    if check_errors:
+        console.print(
+            f"[red bold]{len(check_errors)} check(s) failed - "
+            f"results are incomplete[/red bold]\n"
+        )
 
     if exit_code != 0 and fail_on:
         console.print(
