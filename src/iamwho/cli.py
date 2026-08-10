@@ -48,6 +48,12 @@ SEVERITY_TEXT_STYLES = {
 }
 
 SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "PASS"]
+
+# Severities a --fail-on threshold can trip. INFO and PASS are reported but
+# never gate a build: an INFO finding is a correctly configured one, and
+# failing CI on it would be nonsense.
+GATING_SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+
 VALID_FAIL_ON = {"critical", "high", "medium", "low", "any"}
 
 
@@ -479,15 +485,17 @@ def calculate_exit_code(all_findings: list[dict], fail_on: Optional[str]) -> int
             return 1
         return 0
 
-    counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    counts = dict.fromkeys(SEVERITY_ORDER, 0)
     for f in all_findings:
         sev = str(f.get("severity", "LOW")).upper()
-        counts[sev] += 1
+        # An unrecognised severity is counted as LOW: it still registers as a
+        # finding rather than crashing the run or vanishing from the totals.
+        counts[sev if sev in counts else "LOW"] += 1
 
     fail_on = fail_on.lower()
 
     if fail_on == "any":
-        if any(counts.values()):
+        if any(counts[sev] for sev in GATING_SEVERITIES):
             return 2 if counts.get("CRITICAL", 0) > 0 else 1
     elif fail_on == "critical" and counts.get("CRITICAL", 0) > 0:
         return 2
