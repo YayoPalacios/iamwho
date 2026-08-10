@@ -102,11 +102,9 @@ paginates. Do not monkeypatch private fetch functions.
 
 ## Hop-depth cap
 
-> Applies once bounded chain analysis lands; until then, all checks reason
-> about a single role.
-
-Chain analysis walks role-to-role edges (`iam:PassRole`, `sts:AssumeRole`) to a
-**maximum of 2–3 hops**, set by `MAX_CHAIN_DEPTH`.
+`iamwho.checks.chain.walk(role_arn, depth=0, max_depth=2, visited=None)` walks
+role-to-role edges (`iam:PassRole`, `sts:AssumeRole`) up to `max_depth` hops
+(default 2) from the starting role.
 
 The cap is deliberate. iamwho is a single-principal analyzer meant to run in a
 PR gate with read-only credentials, in seconds. Full account graphing is a
@@ -114,14 +112,23 @@ different tool with a different cost model — use PMapper for that. Unbounded
 walking would also multiply API calls past throttling limits and require read
 access to every role in the account, which the tool does not assume.
 
-**The cap must be visible, never silent.** Any truncated walk sets
-`truncated: true`, reports `max_depth`, and lists unexplored edges in both JSON
-and verbose output. A finding that stops early must say so. Do not raise the cap
-to fix a missed path — that is a signal the path needs different modeling, not
-more depth.
+**The cap must be visible, never silent.** A node whose hop targets fall past
+`max_depth` sets `truncated: true`, reports `max_depth`, and lists those
+targets under `unexplored` rather than dropping them. A PassRole/AssumeRole
+grant to a wildcarded resource (e.g. `role/app-*`) can't be resolved to a
+specific role at all; those are listed under `unresolved_targets` instead of
+just vanishing from the target list. Do not raise the cap to fix a missed path
+— that is a signal the path needs different modeling, not more depth.
 
 Cycles are guarded by a visited set; a role reachable by two paths is reported
-once, at its shortest depth.
+once, at its shortest depth — a BFS invariant (`_shortest_depths` computes
+every reachable role's minimum depth before the output tree is built), not a
+function of which edge happens to be walked first.
+
+The returned dict also carries a top-level `paths` field: a flat list of
+role-ARN lists, one per resolved path from the starting role to a terminal
+node, respecting the same shortest-depth resolution — a role reachable by a
+second, longer path only ever appears in the path of its shorter one.
 
 ## Commits and PRs
 
