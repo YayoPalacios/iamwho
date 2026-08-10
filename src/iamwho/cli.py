@@ -630,7 +630,11 @@ def analyze(
                 for name, message in sorted(check_errors.items())
             ],
         }
-        console.print(json.dumps(output, indent=2, default=str))
+        # Plain print, not console.print: rich would parse square brackets in
+        # the payload as markup and strip them, and would hard-wrap lines past
+        # the console width. Policy documents contain arbitrary strings, so
+        # both corrupt machine-readable output.
+        print(json.dumps(output, indent=2, default=str))
         raise typer.Exit(code=exit_code)
 
     if not no_banner:
