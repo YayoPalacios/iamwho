@@ -594,6 +594,43 @@ def _build_summary(findings: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 # =============================================================================
+# CHAIN WALK SUPPORT
+# =============================================================================
+
+# Actions that hand control to another role: a chain walk follows these to
+# their target role(s) to see what that role can then do.
+HOP_ACTIONS: frozenset[str] = frozenset({"iam:PassRole", "sts:AssumeRole"})
+
+
+def _resolve_hop_targets(finding: dict[str, Any]) -> list[str]:
+    """Pull candidate next-hop role ARNs out of a PassRole/AssumeRole finding.
+
+    Reads the resources already captured in evidence[].resources during the
+    egress scan - no new AWS calls. A concrete role ARN becomes a hop
+    target; a wildcarded one (including the bare "*") can't be resolved to
+    a specific role without enumerating the account, which this tool never
+    does, so it's skipped rather than guessed at.
+    """
+    if finding.get("action") not in HOP_ACTIONS:
+        return []
+
+    targets: set[str] = set()
+    for evidence in finding.get("evidence") or []:
+        if not isinstance(evidence, dict):
+            continue
+        resources = (
+            evidence.get("resources") or evidence.get("normalized_resources") or []
+        )
+        for resource in resources:
+            resource = str(resource)
+            if "*" in resource or ":role/" not in resource:
+                continue
+            targets.add(resource)
+
+    return sorted(targets)
+
+
+# =============================================================================
 # RENDERING (Text.assemble - fully isolated styles)
 # =============================================================================
 
