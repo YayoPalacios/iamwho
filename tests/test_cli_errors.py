@@ -20,6 +20,7 @@ import pytest
 from botocore.exceptions import NoCredentialsError
 from typer.testing import CliRunner
 
+from iamwho.checks.chain import walk as chain_walk
 from iamwho.checks.egress import analyze_egress
 from iamwho.cli import app, calculate_exit_code, check_error, normalize_egress_findings
 
@@ -75,6 +76,18 @@ def test_egress_unresolvable_role_name_populates_both_message_and_error():
 
     assert result["status"] == "error"
     assert result["error"] == result["message"]
+
+
+def test_chain_fetch_failure_populates_both_message_and_error(iam):
+    """chain reuses check_error(), so its error shape must match egress's."""
+    arn = iam.add_role("Denied", inline={"p": ADMIN})
+    iam.fail("list_role_policies", "AccessDenied")
+
+    result = chain_walk(arn)
+
+    assert result["status"] == "error"
+    assert result["error"] == result["message"]
+    assert check_error(result) == result["message"]
 
 
 # =============================================================================
@@ -165,6 +178,19 @@ def test_json_reports_errors_and_exits_non_zero(iam):
     assert result.exit_code != 0
     assert payload["errors"] == [
         {"check": "egress", "message": "Access denied fetching policies for: Denied"}
+    ]
+
+
+def test_json_reports_chain_errors_and_exits_non_zero(iam):
+    arn = iam.add_role("Denied", inline={"p": ADMIN})
+    iam.fail("list_role_policies", "AccessDenied")
+
+    result = run(arn, "--check", "chain", "--json")
+    payload = json.loads(result.output)
+
+    assert result.exit_code != 0
+    assert payload["errors"] == [
+        {"check": "chain", "message": "Access denied fetching policies for: Denied"}
     ]
 
 

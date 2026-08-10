@@ -91,12 +91,16 @@ def _build_node(
         _build_node(target, depth + 1, max_depth, depths, placed) for target in children
     ]
 
+    egress_is_dict = isinstance(egress_result, dict)
+
     return {
         "role_arn": role_arn,
         "depth": depth,
-        "status": egress_result.get("status")
-        if isinstance(egress_result, dict)
-        else "error",
+        "status": egress_result.get("status") if egress_is_dict else "error",
+        # Mirrors egress's error contract (AGENTS.md): populate both message
+        # and error on failure, so callers keying off either field see it.
+        "message": egress_result.get("message") if egress_is_dict else None,
+        "error": egress_result.get("error") if egress_is_dict else None,
         "egress": egress_result,
         "hops": hops,
         "truncated": bool(unexplored),
