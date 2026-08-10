@@ -1,5 +1,5 @@
 """iamwho checks package."""
 
-from iamwho.checks import egress, ingress, privilege_mutation
+from iamwho.checks import chain, egress, ingress, privilege_mutation
 
-__all__ = ["egress", "ingress", "privilege_mutation"]
+__all__ = ["chain", "egress", "ingress", "privilege_mutation"]

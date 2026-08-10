@@ -107,3 +107,60 @@ def test_output_is_exactly_one_json_document(iam):
     assert result.output.strip().startswith("{")
     assert result.output.strip().endswith("}")
     json.loads(result.output)
+
+
+# =============================================================================
+# CHAIN (opt-in, JSON only for now)
+# =============================================================================
+
+
+def test_check_chain_returns_the_walk_structure(iam):
+    target_arn = iam.add_role(
+        "Target", inline={"p": {"Statement": [allow("s3:ListBucket")]}}
+    )
+    arn = iam.add_role(
+        "Agent", inline={"p": {"Statement": [allow("iam:PassRole", target_arn)]}}
+    )
+
+    result, payload = run_json(arn, "--check", "chain")
+
+    assert result.exit_code == 0
+    chain_result = payload["checks"]["chain"]
+    assert chain_result["role_arn"] == arn
+    assert chain_result["depth"] == 0
+    assert chain_result["hops"][0]["role_arn"] == target_arn
+    assert chain_result["paths"] == [[arn, target_arn]]
+
+
+def test_check_all_does_not_include_chain(iam):
+    """chain is opt-in only: more AWS reads than the other checks' single fetch."""
+    arn = iam.add_role("Agent", inline={"p": {"Statement": [allow("s3:ListBucket")]}})
+
+    _, payload = run_json(arn, "--check", "all")
+
+    assert "chain" not in payload["checks"]
+
+
+def test_chain_check_without_json_prints_a_placeholder(iam):
+    """No console tree renderer yet (issue #2) - print a plain message."""
+    arn = iam.add_role("Agent", inline={"p": {"Statement": [allow("s3:ListBucket")]}})
+
+    result = runner.invoke(app, ["analyze", arn, "--check", "chain", "--no-banner"])
+
+    assert result.exit_code == 0
+    assert "requires --json" in result.output
+    assert "issue #2" in result.output
+
+
+def test_chain_check_without_json_surfaces_the_real_error(iam):
+    """A failed walk must still show why, not just the generic placeholder -
+    the placeholder alone told the user to re-run with --json to find out."""
+    arn = iam.add_role("Denied", inline={"p": {"Statement": [allow("*")]}})
+    iam.fail("list_role_policies", "AccessDenied")
+
+    result = runner.invoke(app, ["analyze", arn, "--check", "chain", "--no-banner"])
+
+    assert result.exit_code != 0
+    assert "Check failed" in result.output
+    assert "Access denied fetching policies for: Denied" in result.output
+    assert "requires --json" in result.output

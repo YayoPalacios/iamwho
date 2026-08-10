@@ -338,6 +338,28 @@ def print_summary(
 # ═══════════════════════════════════════════════════════════════════════════════
 # Result Normalizers
 # ═══════════════════════════════════════════════════════════════════════════════
+def _first_chain_error(node: dict) -> Optional[str]:
+    """Depth-first search of a chain-walk tree for the first node whose
+    status is "error", root included.
+
+    A chain walk's own top-level status only reflects the *starting* role's
+    egress fetch; a hop deeper in the tree can fail (e.g. AccessDenied on a
+    role reached via PassRole) while the root itself reads fine. Without this
+    search that failure stays buried in `hops[...]["status"]`, invisible to
+    check_error and therefore to --fail-on.
+    """
+    if node.get("status") == "error":
+        message = node.get("message") or node.get("error")
+        return str(message) if message else "Unknown error"
+
+    for hop in node.get("hops", []):
+        nested = _first_chain_error(hop)
+        if nested:
+            return nested
+
+    return None
+
+
 def check_error(result) -> Optional[str]:
     """Return a check's error message, or None if the check succeeded.
 
@@ -346,6 +368,10 @@ def check_error(result) -> Optional[str]:
     and the detail under `message`. Detection lives here so that no caller can
     match one shape and miss the other, which is how a failed check used to be
     rendered as zero findings.
+
+    A chain walk is a third shape: a tree of hops, any node of which - not
+    just the root - can carry the error, so detecting it means walking the
+    tree via `_first_chain_error` rather than reading `status` off the top.
     """
     if result is None:
         return None
@@ -357,6 +383,9 @@ def check_error(result) -> Optional[str]:
     if isinstance(result, dict) and result.get("status") == "error":
         message = result.get("message") or result.get("error")
         return str(message) if message else "Unknown error"
+
+    if isinstance(result, dict) and "hops" in result:
+        return _first_chain_error(result)
 
     return None
 
@@ -566,7 +595,11 @@ def analyze(
         ..., help="AWS IAM Role or User ARN to analyze"
     ),
     check: str = typer.Option(
-        "all", "--check", "-c", help="Check type: ingress, egress, mutation, or all"
+        "all",
+        "--check",
+        "-c",
+        help="Check type: ingress, egress, mutation, chain, or all "
+        "(chain is opt-in only, not included in all)",
     ),
     output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show verbose output"),
@@ -603,7 +636,7 @@ def analyze(
         raise typer.Exit(code=1)
 
     check = check.lower()
-    if check not in {"ingress", "egress", "mutation", "all"}:
+    if check not in {"ingress", "egress", "mutation", "chain", "all"}:
         if output_json:
             _emit_json_error(
                 principal_arn, {}, "validation", f"Invalid check type: {check}", 1
@@ -654,6 +687,18 @@ def analyze(
             if output_json:
                 json_results["mutation"] = result
 
+        if check == "chain":
+            # Opt-in only, never folded into "all": a bounded chain walk is
+            # inherently more AWS reads than the other checks' single fetch.
+            from iamwho.checks.chain import walk as analyze_chain
+
+            chain_result = analyze_chain(principal_arn)
+            error = check_error(chain_result)
+            if error:
+                check_errors["chain"] = error
+            if output_json:
+                json_results["chain"] = chain_result
+
     except Exception as e:
         if output_json:
             _emit_json_error(principal_arn, json_results, "fatal", str(e), 1)
@@ -690,6 +735,16 @@ def analyze(
         print_banner()
 
     print_target(principal_arn)
+
+    if check == "chain":
+        if "chain" in check_errors:
+            print_check_error(check_errors["chain"])
+        # No console tree/path renderer yet - tracked in issue #2.
+        console.print(
+            "\n[dim]chain analysis requires --json for now "
+            "(console rendering: tracked in issue #2)[/dim]\n"
+        )
+        raise typer.Exit(code=exit_code)
 
     sections = [
         (
@@ -770,6 +825,11 @@ def checks():
         ("ingress", "Trust Policy Analysis", "Who/what can assume this role"),
         ("egress", "Permission Analysis", "What the principal can do"),
         ("mutation", "Privilege Escalation", "Paths to escalate privileges"),
+        (
+            "chain",
+            "Chain Walk",
+            "PassRole/AssumeRole reachability (opt-in, requires --json)",
+        ),
     ]
 
     for name, title, desc in info:

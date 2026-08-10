@@ -594,6 +594,72 @@ def _build_summary(findings: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 # =============================================================================
+# CHAIN WALK SUPPORT
+# =============================================================================
+
+# Actions that hand control to another role: a chain walk follows these to
+# their target role(s) to see what that role can then do.
+HOP_ACTIONS: frozenset[str] = frozenset({"iam:PassRole", "sts:AssumeRole"})
+
+
+def _partition_hop_resources(finding: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Split a PassRole/AssumeRole finding's evidence resources into
+    (resolved, unresolved) role targets.
+
+    A resource is only considered at all if it looks like a role target: the
+    bare "*" or something containing ":role/". Among those, a wildcarded one
+    (including the bare "*") can't be resolved to a specific role without
+    enumerating the account, which this tool never does - it's unresolved,
+    not silently dropped. IAM's policy language has two wildcard characters,
+    "*" (any sequence) and "?" (any single character), and either one makes
+    a resource unresolvable the same way. Anything else (an unrelated
+    resource type on a PassRole/AssumeRole statement) has no bearing on the
+    chain walk.
+    """
+    if finding.get("action") not in HOP_ACTIONS:
+        return [], []
+
+    resolved: set[str] = set()
+    unresolved: set[str] = set()
+    for evidence in finding.get("evidence") or []:
+        if not isinstance(evidence, dict):
+            continue
+        resources = (
+            evidence.get("resources") or evidence.get("normalized_resources") or []
+        )
+        for resource in resources:
+            resource = str(resource)
+            looks_like_role = resource == "*" or ":role/" in resource
+            if not looks_like_role:
+                continue
+            if "*" in resource or "?" in resource:
+                unresolved.add(resource)
+            else:
+                resolved.add(resource)
+
+    return sorted(resolved), sorted(unresolved)
+
+
+def _resolve_hop_targets(finding: dict[str, Any]) -> list[str]:
+    """Pull candidate next-hop role ARNs out of a PassRole/AssumeRole finding.
+
+    Reads the resources already captured in evidence[].resources during the
+    egress scan - no new AWS calls. See _unresolved_hop_targets for the
+    wildcarded resources this leaves out.
+    """
+    resolved, _ = _partition_hop_resources(finding)
+    return resolved
+
+
+def _unresolved_hop_targets(finding: dict[str, Any]) -> list[str]:
+    """Wildcarded role resources on a PassRole/AssumeRole finding that
+    _resolve_hop_targets could not turn into a concrete hop target.
+    """
+    _, unresolved = _partition_hop_resources(finding)
+    return unresolved
+
+
+# =============================================================================
 # RENDERING (Text.assemble - fully isolated styles)
 # =============================================================================
 
