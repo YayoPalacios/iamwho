@@ -153,3 +153,107 @@ def test_walk_visited_guard_stops_a_cycle(iam):
     assert result["hops"][0]["role_arn"] == b_arn
     # B's PassRole back to A is a cycle: A is already visited, so it's not re-walked.
     assert result["hops"][0]["hops"] == []
+
+
+# =============================================================================
+# AGENT-IDENTITY FIXTURES
+# =============================================================================
+
+
+def _flatten(node):
+    """Yield node and all its descendants, depth-first."""
+    yield node
+    for hop in node["hops"]:
+        yield from _flatten(hop)
+
+
+def test_walk_reports_the_full_path_to_admin_two_hops_away(iam):
+    """agent -> deployer -> admin: the walk must surface the admin hop and
+    its full-admin finding, not just the roles closer to the start."""
+    admin_arn = iam.add_role("Admin", inline={"p": {"Statement": [allow("*")]}})
+    deployer_arn = iam.add_role(
+        "Deployer",
+        inline={"p": {"Statement": [allow("iam:PassRole", admin_arn)]}},
+    )
+    agent_arn = iam.add_role(
+        "Agent",
+        inline={"p": {"Statement": [allow("iam:PassRole", deployer_arn)]}},
+    )
+
+    result = chain.walk(agent_arn)
+
+    assert result["role_arn"] == agent_arn
+    deployer_node = result["hops"][0]
+    assert deployer_node["role_arn"] == deployer_arn
+    assert deployer_node["depth"] == 1
+
+    admin_node = deployer_node["hops"][0]
+    assert admin_node["role_arn"] == admin_arn
+    assert admin_node["depth"] == 2
+
+    admin_actions = {f["action"] for f in admin_node["egress"]["findings"]}
+    assert "*" in admin_actions
+
+    # Nothing was truncated: the whole path fit inside the default max_depth.
+    assert not any(node["truncated"] for node in _flatten(result))
+
+
+def test_walk_finds_no_escalation_when_every_hop_is_safe(iam):
+    """agent -> deployer -> viewer, none of which grant anything dangerous
+    beyond the PassRole hop itself: no CRITICAL/HIGH finding anywhere."""
+    viewer_arn = iam.add_role(
+        "Viewer", inline={"p": {"Statement": [allow("s3:ListBucket")]}}
+    )
+    deployer_arn = iam.add_role(
+        "Deployer",
+        inline={"p": {"Statement": [allow("iam:PassRole", viewer_arn)]}},
+    )
+    agent_arn = iam.add_role(
+        "Agent",
+        inline={"p": {"Statement": [allow("iam:PassRole", deployer_arn)]}},
+    )
+
+    result = chain.walk(agent_arn)
+
+    all_findings = [
+        f for node in _flatten(result) for f in node["egress"].get("findings", [])
+    ]
+    assert not any(f["risk"] in ("CRITICAL", "HIGH") for f in all_findings)
+    assert not any(node["truncated"] for node in _flatten(result))
+
+    viewer_node = result["hops"][0]["hops"][0]
+    assert viewer_node["role_arn"] == viewer_arn
+    assert viewer_node["egress"]["findings"] == []
+
+
+def test_walk_stops_at_max_depth_and_reports_truncation(iam):
+    """A chain deeper than max_depth must stop at the cap and say so,
+    rather than pretending the chain ends there or fetching past it."""
+    admin_arn = iam.add_role("Admin", inline={"p": {"Statement": [allow("*")]}})
+    hop3_arn = iam.add_role(
+        "Hop3", inline={"p": {"Statement": [allow("iam:PassRole", admin_arn)]}}
+    )
+    hop2_arn = iam.add_role(
+        "Hop2", inline={"p": {"Statement": [allow("iam:PassRole", hop3_arn)]}}
+    )
+    hop1_arn = iam.add_role(
+        "Hop1", inline={"p": {"Statement": [allow("iam:PassRole", hop2_arn)]}}
+    )
+    start_arn = iam.add_role(
+        "Start", inline={"p": {"Statement": [allow("iam:PassRole", hop1_arn)]}}
+    )
+
+    result = chain.walk(start_arn)  # max_depth defaults to 2
+
+    hop1_node = result["hops"][0]
+    hop2_node = hop1_node["hops"][0]
+
+    assert hop2_node["role_arn"] == hop2_arn
+    assert hop2_node["depth"] == 2
+    assert hop2_node["truncated"] is True
+    assert hop2_node["max_depth"] == 2
+    assert hop2_node["unexplored"] == [hop3_arn]
+    assert hop2_node["hops"] == []  # not walked
+
+    # Admin, beyond the cap, was never fetched at all.
+    assert iam.count("list_role_policies") == 3  # Start, Hop1, Hop2 only
