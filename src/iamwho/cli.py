@@ -737,6 +737,8 @@ def analyze(
     print_target(principal_arn)
 
     if check == "chain":
+        if "chain" in check_errors:
+            print_check_error(check_errors["chain"])
         # No console tree/path renderer yet - tracked in issue #2.
         console.print(
             "\n[dim]chain analysis requires --json for now "
