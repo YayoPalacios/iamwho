@@ -271,9 +271,14 @@ def print_check_error(message: str):
 
 
 def print_summary(
-    ingress_findings: list, egress_findings: list, mutation_findings: list
+    ingress_findings: list,
+    egress_findings: list,
+    mutation_findings: list,
+    check_errors: Optional[dict] = None,
 ):
     """Print the summary table with better spacing and organization."""
+    check_errors = check_errors or {}
+
     console.print()
     console.print("━" * 60, style="bold")
 
@@ -284,14 +289,22 @@ def print_summary(
     ]
 
     for name, findings, color in sections:
-        count = len(findings)
-        max_sev = get_section_severity(findings)
-        text_style = SEVERITY_TEXT_STYLES.get(max_sev, "dim")
-        label = SEVERITY_STYLES.get(max_sev, ("dim", max_sev))[1]
+        if name.lower() in check_errors:
+            # A check that could not run has no severity. Reporting it as
+            # "0 findings PASS" contradicts the section above and reads as a
+            # clean result.
+            count_text = "not analyzed"
+            label = "ERROR"
+            text_style = "bold red"
+        else:
+            max_sev = get_section_severity(findings)
+            count_text = f"{len(findings):>5} findings"
+            label = SEVERITY_STYLES.get(max_sev, ("dim", max_sev))[1]
+            text_style = SEVERITY_TEXT_STYLES.get(max_sev, "dim")
 
         line = Text()
         line.append(f"  {name.ljust(14)}", style=f"bold {color}")
-        line.append(f"{count:>5} findings".ljust(18), style="white")
+        line.append(count_text.ljust(18), style="white")
         line.append(f" {label} ", style=text_style)
         console.print(line)
 
@@ -681,7 +694,7 @@ def analyze(
         else:
             print_no_findings(empty_message)
 
-    print_summary(ingress_findings, egress_findings, mutation_findings)
+    print_summary(ingress_findings, egress_findings, mutation_findings, check_errors)
 
     if check_errors:
         console.print(
