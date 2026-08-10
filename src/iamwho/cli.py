@@ -48,7 +48,14 @@ SEVERITY_TEXT_STYLES = {
 }
 
 SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "PASS"]
+
+# Severities a --fail-on threshold can trip. INFO and PASS are reported but
+# never gate a build: an INFO finding is a correctly configured one, and
+# failing CI on it would be nonsense.
+GATING_SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+
 VALID_FAIL_ON = {"critical", "high", "medium", "low", "any"}
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Severity Helpers
@@ -241,6 +248,7 @@ def print_finding(finding: dict, verbose: bool = False):
                 bullet.append(label, style="cyan")
                 console.print(bullet)
 
+
 def print_no_findings(message: str = "No findings detected"):
     """Print a no-findings message."""
     text = Text()
@@ -249,8 +257,28 @@ def print_no_findings(message: str = "No findings detected"):
     console.print(text)
 
 
-def print_summary(ingress_findings: list, egress_findings: list, mutation_findings: list):
+def print_check_error(message: str):
+    """Print a check failure.
+
+    A check that could not read AWS has not found nothing; it has found
+    nothing out. Never render this as a clean result.
+    """
+    text = Text()
+    text.append("  x ", style="red bold")
+    text.append("Check failed: ", style="red bold")
+    text.append(message, style="red")
+    console.print(text)
+
+
+def print_summary(
+    ingress_findings: list,
+    egress_findings: list,
+    mutation_findings: list,
+    check_errors: Optional[dict] = None,
+):
     """Print the summary table with better spacing and organization."""
+    check_errors = check_errors or {}
+
     console.print()
     console.print("━" * 60, style="bold")
 
@@ -261,14 +289,22 @@ def print_summary(ingress_findings: list, egress_findings: list, mutation_findin
     ]
 
     for name, findings, color in sections:
-        count = len(findings)
-        max_sev = get_section_severity(findings)
-        text_style = SEVERITY_TEXT_STYLES.get(max_sev, "dim")
-        label = SEVERITY_STYLES.get(max_sev, ("dim", max_sev))[1]
+        if name.lower() in check_errors:
+            # A check that could not run has no severity. Reporting it as
+            # "0 findings PASS" contradicts the section above and reads as a
+            # clean result.
+            count_text = "not analyzed"
+            label = "ERROR"
+            text_style = "bold red"
+        else:
+            max_sev = get_section_severity(findings)
+            count_text = f"{len(findings):>5} findings"
+            label = SEVERITY_STYLES.get(max_sev, ("dim", max_sev))[1]
+            text_style = SEVERITY_TEXT_STYLES.get(max_sev, "dim")
 
         line = Text()
         line.append(f"  {name.ljust(14)}", style=f"bold {color}")
-        line.append(f"{count:>5} findings".ljust(18), style="white")
+        line.append(count_text.ljust(18), style="white")
         line.append(f" {label} ", style=text_style)
         console.print(line)
 
@@ -302,10 +338,33 @@ def print_summary(ingress_findings: list, egress_findings: list, mutation_findin
 # ═══════════════════════════════════════════════════════════════════════════════
 # Result Normalizers
 # ═══════════════════════════════════════════════════════════════════════════════
+def check_error(result) -> Optional[str]:
+    """Return a check's error message, or None if the check succeeded.
+
+    Checks report failure in two shapes: ingress returns a dataclass with an
+    `error` attribute, egress and mutation return a dict with status "error"
+    and the detail under `message`. Detection lives here so that no caller can
+    match one shape and miss the other, which is how a failed check used to be
+    rendered as zero findings.
+    """
+    if result is None:
+        return None
+
+    error = getattr(result, "error", None)
+    if isinstance(error, str) and error:
+        return error
+
+    if isinstance(result, dict) and result.get("status") == "error":
+        message = result.get("message") or result.get("error")
+        return str(message) if message else "Unknown error"
+
+    return None
+
+
 def normalize_ingress_findings(result) -> list[dict]:
     """Convert IngressResult dataclass to list of finding dicts."""
     findings = []
-    if hasattr(result, "error") and result.error:
+    if check_error(result):
         return []
 
     raw_findings = getattr(result, "findings", [])
@@ -333,7 +392,9 @@ def normalize_ingress_findings(result) -> list[dict]:
                 "action": str(assume_type) if assume_type else "",
                 "description": str(description),
                 "is_combo": False,
-                "conditions": getattr(getattr(f, "conditions", None), "raw_conditions", {}),
+                "conditions": getattr(
+                    getattr(f, "conditions", None), "raw_conditions", {}
+                ),
             }
         )
 
@@ -345,7 +406,7 @@ def normalize_egress_findings(result) -> list[dict]:
     if not isinstance(result, dict):
         return []
 
-    if "error" in result:
+    if check_error(result):
         return []
 
     findings = []
@@ -373,7 +434,7 @@ def normalize_mutation_findings(result) -> list[dict]:
     if not isinstance(result, dict):
         return []
 
-    if "error" in result:
+    if check_error(result):
         return []
 
     findings = []
@@ -437,15 +498,17 @@ def calculate_exit_code(all_findings: list[dict], fail_on: Optional[str]) -> int
             return 1
         return 0
 
-    counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    counts = dict.fromkeys(SEVERITY_ORDER, 0)
     for f in all_findings:
         sev = str(f.get("severity", "LOW")).upper()
-        counts[sev] += 1
+        # An unrecognised severity is counted as LOW: it still registers as a
+        # finding rather than crashing the run or vanishing from the totals.
+        counts[sev if sev in counts else "LOW"] += 1
 
     fail_on = fail_on.lower()
 
     if fail_on == "any":
-        if any(counts.values()):
+        if any(counts[sev] for sev in GATING_SEVERITIES):
             return 2 if counts.get("CRITICAL", 0) > 0 else 1
     elif fail_on == "critical" and counts.get("CRITICAL", 0) > 0:
         return 2
@@ -472,12 +535,36 @@ def calculate_exit_code(all_findings: list[dict], fail_on: Optional[str]) -> int
     return 0
 
 
+def _emit_json_error(
+    principal_arn: str,
+    checks: dict,
+    error_check: str,
+    message: str,
+    exit_code: int,
+) -> None:
+    """Emit the same JSON envelope shape as a normal --json run, then exit.
+
+    Used on validation/exception paths that occur outside the check loop, so
+    --json never emits Rich-formatted text in place of JSON (see the payload
+    path below for why console.print/print_exception is unsafe here).
+    """
+    output = {
+        "principal_arn": principal_arn,
+        "checks": checks,
+        "errors": [{"check": error_check, "message": message}],
+    }
+    print(json.dumps(output, indent=2, default=str))
+    raise typer.Exit(code=exit_code)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CLI Commands
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.command()
 def analyze(
-    principal_arn: str = typer.Argument(..., help="AWS IAM Role or User ARN to analyze"),
+    principal_arn: str = typer.Argument(
+        ..., help="AWS IAM Role or User ARN to analyze"
+    ),
     check: str = typer.Option(
         "all", "--check", "-c", help="Check type: ingress, egress, mutation, or all"
     ),
@@ -502,22 +589,41 @@ def analyze(
         iamwho analyze arn:aws:iam::123456789012:role/MyRole --fail-on high
     """
     if not is_valid_arn(principal_arn):
-        console.print(f"\n[red bold]Error:[/red bold] Invalid ARN format: {principal_arn}\n")
+        if output_json:
+            _emit_json_error(
+                principal_arn,
+                {},
+                "validation",
+                f"Invalid ARN format: {principal_arn}",
+                1,
+            )
+        console.print(
+            f"\n[red bold]Error:[/red bold] Invalid ARN format: {principal_arn}\n"
+        )
         raise typer.Exit(code=1)
 
     check = check.lower()
     if check not in {"ingress", "egress", "mutation", "all"}:
+        if output_json:
+            _emit_json_error(
+                principal_arn, {}, "validation", f"Invalid check type: {check}", 1
+            )
         console.print(f"\n[red bold]Error:[/red bold] Invalid check type: {check}\n")
         raise typer.Exit(code=1)
 
     ingress_findings, egress_findings, mutation_findings = [], [], []
     json_results = {}
+    check_errors: dict[str, str] = {}
+    egress_result = None
 
     try:
         if check in ("ingress", "all"):
             from iamwho.checks.ingress import analyze_ingress
 
             result = analyze_ingress(principal_arn)
+            error = check_error(result)
+            if error:
+                check_errors["ingress"] = error
             ingress_findings = normalize_ingress_findings(result)
             if output_json:
                 json_results["ingress"] = _serialize_result(result)
@@ -525,66 +631,117 @@ def analyze(
         if check in ("egress", "all"):
             from iamwho.checks.egress import analyze_egress
 
-            result = analyze_egress(principal_arn)
-            egress_findings = normalize_egress_findings(result)
+            egress_result = analyze_egress(principal_arn)
+            error = check_error(egress_result)
+            if error:
+                check_errors["egress"] = error
+            egress_findings = normalize_egress_findings(egress_result)
             if output_json:
-                json_results["egress"] = result
+                json_results["egress"] = egress_result
 
         if check in ("mutation", "all"):
             from iamwho.checks.privilege_mutation import analyze_privilege_mutation
 
-            result = analyze_privilege_mutation(principal_arn)
+            # Reuse the egress result when both checks run, so the role's
+            # policies are fetched and analyzed once instead of twice.
+            result = analyze_privilege_mutation(
+                principal_arn, egress_result=egress_result
+            )
+            error = check_error(result)
+            if error:
+                check_errors["mutation"] = error
             mutation_findings = normalize_mutation_findings(result)
             if output_json:
                 json_results["mutation"] = result
 
     except Exception as e:
+        if output_json:
+            _emit_json_error(principal_arn, json_results, "fatal", str(e), 1)
         console.print(f"\n[red bold]Error:[/red bold] {e}\n")
         if verbose:
             console.print_exception()
         raise typer.Exit(code=1)
 
+    all_findings = ingress_findings + egress_findings + mutation_findings
+    exit_code = calculate_exit_code(all_findings, fail_on)
+
+    # A check that could not read AWS must never exit 0: in a CI gate that is
+    # indistinguishable from a clean result.
+    if check_errors:
+        exit_code = max(exit_code, 1)
+
     if output_json:
-        output = {"principal_arn": principal_arn, "checks": json_results}
-        console.print(json.dumps(output, indent=2, default=str))
-        raise typer.Exit(code=0)
+        output = {
+            "principal_arn": principal_arn,
+            "checks": json_results,
+            "errors": [
+                {"check": name, "message": message}
+                for name, message in sorted(check_errors.items())
+            ],
+        }
+        # Plain print, not console.print: rich would parse square brackets in
+        # the payload as markup and strip them, and would hard-wrap lines past
+        # the console width. Policy documents contain arbitrary strings, so
+        # both corrupt machine-readable output.
+        print(json.dumps(output, indent=2, default=str))
+        raise typer.Exit(code=exit_code)
 
     if not no_banner:
         print_banner()
 
     print_target(principal_arn)
 
-    if check in ("ingress", "all"):
-        print_section_header("INGRESS", "Who can assume this role?", "cyan")
-        if ingress_findings:
-            for finding in ingress_findings:
+    sections = [
+        (
+            "ingress",
+            "INGRESS",
+            "Who can assume this role?",
+            "cyan",
+            ingress_findings,
+            "No risky trust relationships detected",
+        ),
+        (
+            "egress",
+            "EGRESS",
+            "What can this role do?",
+            "yellow",
+            egress_findings,
+            "No dangerous permissions detected",
+        ),
+        (
+            "mutation",
+            "MUTATION",
+            "How could privileges escalate?",
+            "magenta",
+            mutation_findings,
+            "No escalation paths detected",
+        ),
+    ]
+
+    for name, title, subtitle, color, findings, empty_message in sections:
+        if check not in (name, "all"):
+            continue
+        print_section_header(title, subtitle, color)
+        if name in check_errors:
+            print_check_error(check_errors[name])
+        elif findings:
+            for finding in findings:
                 print_finding(finding, verbose=verbose)
         else:
-            print_no_findings("No risky trust relationships detected")
+            print_no_findings(empty_message)
 
-    if check in ("egress", "all"):
-        print_section_header("EGRESS", "What can this role do?", "yellow")
-        if egress_findings:
-            for finding in egress_findings:
-                print_finding(finding, verbose=verbose)
-        else:
-            print_no_findings("No dangerous permissions detected")
+    print_summary(ingress_findings, egress_findings, mutation_findings, check_errors)
 
-    if check in ("mutation", "all"):
-        print_section_header("MUTATION", "How could privileges escalate?", "magenta")
-        if mutation_findings:
-            for finding in mutation_findings:
-                print_finding(finding, verbose=verbose)
-        else:
-            print_no_findings("No escalation paths detected")
-
-    print_summary(ingress_findings, egress_findings, mutation_findings)
-
-    all_findings = ingress_findings + egress_findings + mutation_findings
-    exit_code = calculate_exit_code(all_findings, fail_on)
+    if check_errors:
+        console.print(
+            f"[red bold]{len(check_errors)} check(s) failed - "
+            f"results are incomplete[/red bold]\n"
+        )
 
     if exit_code != 0 and fail_on:
-        console.print(f"[dim]Exiting with code {exit_code} (--fail-on {fail_on})[/dim]\n")
+        console.print(
+            f"[dim]Exiting with code {exit_code} (--fail-on {fail_on})[/dim]\n"
+        )
 
     raise typer.Exit(code=exit_code)
 

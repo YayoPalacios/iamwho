@@ -468,17 +468,24 @@ def _mutation_finding_id(actions: list[str], category: str) -> str:
 # =============================================================================
 
 
-def analyze_privilege_mutation(principal_arn: str) -> dict[str, Any]:
+def analyze_privilege_mutation(
+    principal_arn: str,
+    egress_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """
     Run privilege mutation check on a principal.
 
     Args:
         principal_arn: The ARN of the IAM principal
+        egress_result: An already-computed egress result for this principal.
+            Callers that have run the egress check should pass it so the
+            policies are analyzed once rather than fetched and analyzed twice.
 
     Returns:
         Dictionary with mutation analysis results
     """
-    egress_result = egress.run(principal_arn)
+    if egress_result is None:
+        egress_result = egress.run(principal_arn)
 
     if egress_result["status"] == "error":
         return {
@@ -571,7 +578,6 @@ def _check_mutation(permissions: list[dict[str, Any]]) -> dict[str, Any]:
             evidence = egress._dedupe_and_sort_evidence(evidence)
         else:
             evidence = []
-
 
         raw_resources = perm.get("resources", []) or []
         resources = sorted(set(str(r) for r in raw_resources)) if raw_resources else []
@@ -915,13 +921,18 @@ def _render_mutation_finding(console, finding: dict[str, Any], verbose: bool) ->
                 if resources:
                     res_line = Text()
                     res_line.append("                resources: ", style="dim")
-                    res_line.append(escape(", ".join([str(r) for r in resources])), style="white")
+                    res_line.append(
+                        escape(", ".join([str(r) for r in resources])), style="white"
+                    )
                     console.print(res_line)
 
                 if condition_keys:
                     ck_line = Text()
                     ck_line.append("                condition_keys: ", style="dim")
-                    ck_line.append(escape(", ".join([str(k) for k in condition_keys])), style="white")
+                    ck_line.append(
+                        escape(", ".join([str(k) for k in condition_keys])),
+                        style="white",
+                    )
                     console.print(ck_line)
 
         if finding.get("remediation"):
