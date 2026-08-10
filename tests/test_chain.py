@@ -225,6 +225,65 @@ def test_walk_reports_a_shared_target_at_its_shortest_depth(iam):
     assert mid_node["hops"] == []  # not re-embedded as Mid's child
 
 
+def test_walk_reports_a_genuine_cycle_at_correct_shortest_depths(iam):
+    """A -> B -> A: the walk must terminate, not loop, and place A and B
+    each at their true shortest depth (A at 0, since it's the start)."""
+    a_arn = role_arn("A")
+    b_arn = role_arn("B")
+    iam.add_role("A", inline={"p": {"Statement": [allow("iam:PassRole", b_arn)]}})
+    iam.add_role("B", inline={"p": {"Statement": [allow("iam:PassRole", a_arn)]}})
+
+    result = chain.walk(a_arn)  # must return, not recurse forever
+
+    nodes = list(_flatten(result))
+    assert len(nodes) == 2  # A and B each appear exactly once
+    depths_by_arn = {node["role_arn"]: node["depth"] for node in nodes}
+    assert depths_by_arn == {a_arn: 0, b_arn: 1}
+
+    b_node = next(n for n in nodes if n["role_arn"] == b_arn)
+    assert b_node["hops"] == []
+    assert b_node["unexplored"] == []  # A is already covered, not "beyond the cap"
+    assert b_node["truncated"] is False
+
+
+def test_walk_reports_a_diamond_target_at_the_in_cap_depth(iam):
+    """Target is reachable two ways: Start -> A -> Target (depth 2, within
+    the default max_depth=2 cap) and Start -> B -> C -> Target (depth 3,
+    past the cap). It must be reported once, fully resolved, at depth 2 -
+    not marked truncated/unexplored because of the longer path via C."""
+    target_arn = iam.add_role(
+        "Target", inline={"p": {"Statement": [allow("s3:ListBucket")]}}
+    )
+    a_arn = iam.add_role(
+        "A", inline={"p": {"Statement": [allow("iam:PassRole", target_arn)]}}
+    )
+    c_arn = iam.add_role(
+        "C", inline={"p": {"Statement": [allow("iam:PassRole", target_arn)]}}
+    )
+    b_arn = iam.add_role(
+        "B", inline={"p": {"Statement": [allow("iam:PassRole", c_arn)]}}
+    )
+    start_arn = iam.add_role(
+        "Start",
+        inline={"p": {"Statement": [allow("iam:PassRole", [a_arn, b_arn])]}},
+    )
+
+    result = chain.walk(start_arn)  # max_depth defaults to 2
+
+    nodes = list(_flatten(result))
+    target_nodes = [n for n in nodes if n["role_arn"] == target_arn]
+    assert len(target_nodes) == 1  # reported exactly once
+    assert target_nodes[0]["depth"] == 2  # at the shorter, in-cap depth
+
+    c_node = next(n for n in nodes if n["role_arn"] == c_arn)
+    assert c_node["hops"] == []  # Target not re-embedded here
+    assert c_node["unexplored"] == []  # already resolved via A, not truncated
+    assert c_node["truncated"] is False
+
+    assert not any(node["truncated"] for node in nodes)
+    assert iam.count("list_role_policies") == 5  # Start,A,B,C,Target each once
+
+
 # =============================================================================
 # AGENT-IDENTITY FIXTURES
 # =============================================================================
