@@ -255,3 +255,15 @@ def test_invalid_role_arn_is_rejected_before_any_api_call(iam):
         _client.get_role_policies("arn:aws:iam::123456789012:user/alice")
 
     assert iam.calls == []
+
+
+def test_managed_policy_not_found_reports_a_policy_not_a_role(iam):
+    """NoSuchEntity on a policy fetch used to render as 'Role not found'."""
+    policy_arn = iam.add_managed_policy("Ghost", {"Statement": [allow("iam:PassRole")]})
+    arn = iam.add_role("Agent", attached=[policy_arn])
+    iam.fail("get_policy", "NoSuchEntity")
+
+    with pytest.raises(_client.IamFetchError) as excinfo:
+        _client.get_role_policies(arn)
+
+    assert excinfo.value.message == f"Policy not found: {policy_arn}"

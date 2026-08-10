@@ -99,13 +99,27 @@ def extract_role_name(role_arn: str) -> str | None:
     return role_path.split("/")[-1] or None
 
 
-def _raise_for_client_error(e: ClientError, role_name: str, action: str) -> NoReturn:
-    """Translate a botocore ClientError into an IamFetchError."""
+def _raise_for_client_error(
+    e: ClientError,
+    resource_name: str,
+    action: str,
+    entity_kind: str = "Role",
+) -> NoReturn:
+    """Translate a botocore ClientError into an IamFetchError.
+
+    ``entity_kind`` names what ``resource_name`` refers to ("Role" or
+    "Policy") for the NoSuchEntity message; callers fetching a role can rely
+    on the default.
+    """
     code = e.response.get("Error", {}).get("Code", "Unknown")
     if code == "NoSuchEntity":
-        raise IamFetchError(f"Role not found: {role_name}", code=code) from e
+        raise IamFetchError(
+            f"{entity_kind} not found: {resource_name}", code=code
+        ) from e
     if code in _ACCESS_DENIED_CODES:
-        raise IamFetchError(f"Access denied {action}: {role_name}", code=code) from e
+        raise IamFetchError(
+            f"Access denied {action}: {resource_name}", code=code
+        ) from e
     raise IamFetchError(f"AWS error: {code}", code=code) from e
 
 
@@ -140,7 +154,7 @@ def _managed_policy_document_cached(policy_arn: str) -> dict[str, Any]:
         version_id = policy_info["Policy"]["DefaultVersionId"]
         version = client.get_policy_version(PolicyArn=policy_arn, VersionId=version_id)
     except ClientError as e:
-        _raise_for_client_error(e, policy_arn, "fetching policy")
+        _raise_for_client_error(e, policy_arn, "fetching policy", entity_kind="Policy")
     return version["PolicyVersion"]["Document"]
 
 
