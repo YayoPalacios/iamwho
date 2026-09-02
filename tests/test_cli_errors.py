@@ -133,6 +133,65 @@ def test_chain_walk_downstream_hop_failure_gates_the_exit_code(iam):
 
 
 # =============================================================================
+# CHAIN ESCALATION PATHS
+# =============================================================================
+
+
+def test_chain_escalation_path_gates_the_exit_code(iam):
+    """The case the chain walk exists to catch: a role one PassRole away from
+    admin. Its findings were computed and emitted in --json, but never reached
+    calculate_exit_code, so the walk could only ever fail a CI gate when a hop
+    *read* had errored - a clean read of an escalation path exited 0."""
+    admin_policy = iam.add_managed_policy("admin", ADMIN)
+    target = iam.add_role("Target", attached=[admin_policy])
+    start = iam.add_role(
+        "Start", inline={"p": {"Statement": [allow("iam:PassRole", target)]}}
+    )
+
+    result = run(start, "--check", "chain", "--json", "--fail-on", "critical")
+    payload = json.loads(result.output)
+
+    assert result.exit_code == 2
+    assert payload["errors"] == []  # nothing failed to read: this is the finding
+    reached = payload["checks"]["chain"]["hops"][0]
+    assert reached["role_arn"] == target
+    assert any(
+        str(f.get("risk", "")).upper() == "CRITICAL"
+        for f in reached["egress"]["findings"]
+    )
+
+
+def test_chain_text_mode_exit_code_matches_json(iam):
+    """The chain check exits early in text mode, on its own code path."""
+    admin_policy = iam.add_managed_policy("admin", ADMIN)
+    target = iam.add_role("Target", attached=[admin_policy])
+    start = iam.add_role(
+        "Start", inline={"p": {"Statement": [allow("iam:PassRole", target)]}}
+    )
+
+    as_json = run(start, "--check", "chain", "--json", "--fail-on", "critical")
+    as_text = run(start, "--check", "chain", "--no-banner", "--fail-on", "critical")
+
+    assert as_text.exit_code == as_json.exit_code == 2
+
+
+def test_chain_walk_reaching_nothing_dangerous_exits_zero(iam):
+    """The other half of the gate: a walk that reads cleanly and finds no
+    escalation must still exit 0, or the check is just a constant failure."""
+    target = iam.add_role(
+        "Target", inline={"p": {"Statement": [allow("s3:ListBucket")]}}
+    )
+    start = iam.add_role(
+        "Start", inline={"p": {"Statement": [allow("iam:PassRole", target)]}}
+    )
+
+    result = run(start, "--check", "chain", "--json", "--fail-on", "critical")
+
+    assert result.exit_code == 0
+    assert json.loads(result.output)["errors"] == []
+
+
+# =============================================================================
 # FAIL-OPEN
 # =============================================================================
 

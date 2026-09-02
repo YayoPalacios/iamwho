@@ -116,6 +116,76 @@ def test_non_hop_action_reports_no_unresolved_targets():
     assert _unresolved_hop_targets(finding) == []
 
 
+def test_service_wildcard_action_is_a_hop():
+    """iam:* grants iam:PassRole. Matching HOP_ACTIONS by string equality
+    missed every wildcard grant, so the roles with the broadest PassRole
+    rights were the ones whose edges disappeared."""
+    finding = _finding("iam:*", [_evidence([ADMIN_ARN])])
+
+    assert _resolve_hop_targets(finding) == [ADMIN_ARN]
+
+
+def test_sts_wildcard_action_is_a_hop():
+    finding = _finding("sts:*", [_evidence([ADMIN_ARN])])
+
+    assert _resolve_hop_targets(finding) == [ADMIN_ARN]
+
+
+def test_full_admin_action_is_a_hop():
+    finding = _finding("*", [_evidence([ADMIN_ARN])])
+
+    assert _resolve_hop_targets(finding) == [ADMIN_ARN]
+
+
+def test_partial_wildcard_action_is_a_hop():
+    """The pattern is matched, not prefix-stripped: iam:*Role covers
+    iam:PassRole even though "iam:Role" is not a prefix of it."""
+    assert _resolve_hop_targets(_finding("iam:Pass*", [_evidence([ADMIN_ARN])])) == [
+        ADMIN_ARN
+    ]
+    assert _resolve_hop_targets(_finding("iam:*Role", [_evidence([ADMIN_ARN])])) == [
+        ADMIN_ARN
+    ]
+
+
+def test_question_mark_wildcard_action_is_a_hop():
+    """? is IAM's single-character wildcard on actions as well as resources."""
+    finding = _finding("iam:P?ssRole", [_evidence([ADMIN_ARN])])
+
+    assert _resolve_hop_targets(finding) == [ADMIN_ARN]
+
+
+def test_hop_action_matching_is_case_insensitive():
+    """IAM action matching ignores case, so a policy may spell it any way."""
+    finding = _finding("IAM:passrole", [_evidence([ADMIN_ARN])])
+
+    assert _resolve_hop_targets(finding) == [ADMIN_ARN]
+
+
+def test_wildcard_action_on_all_resources_is_unresolved_not_silent():
+    """Admin can pass any role. That is unresolvable without enumerating the
+    account, but it must still show up as unresolved rather than vanish."""
+    finding = _finding("*", [_evidence(["*"])])
+
+    assert _resolve_hop_targets(finding) == []
+    assert _unresolved_hop_targets(finding) == ["*"]
+
+
+def test_unrelated_service_wildcard_is_not_a_hop():
+    """s3:* is broad but grants neither PassRole nor AssumeRole."""
+    finding = _finding("s3:*", [_evidence([ADMIN_ARN])])
+
+    assert _resolve_hop_targets(finding) == []
+    assert _unresolved_hop_targets(finding) == []
+
+
+def test_wildcard_action_prefixing_a_hop_name_is_not_a_hop():
+    """A literal that merely starts like a hop action is not one."""
+    finding = _finding("iam:PassRoleToNothing", [_evidence([ADMIN_ARN])])
+
+    assert _resolve_hop_targets(finding) == []
+
+
 # =============================================================================
 # walk
 # =============================================================================
@@ -148,6 +218,20 @@ def test_walk_follows_a_passrole_target_one_hop(iam):
     hop = result["hops"][0]
     assert hop["role_arn"] == target
     assert hop["depth"] == 1
+
+
+def test_walk_follows_a_wildcard_passrole_grant(iam):
+    """End to end: a role whose only IAM grant is iam:* on a target role.
+    The walk reported no hops at all - not truncated, not unresolved - so a
+    role one wildcard PassRole away from admin looked like a dead end."""
+    admin_policy = iam.add_managed_policy("admin", {"Statement": [allow("*")]})
+    target = iam.add_role("Target", attached=[admin_policy])
+    start = iam.add_role("Start", inline={"p": {"Statement": [allow("iam:*", target)]}})
+
+    result = chain.walk(start)
+
+    assert [hop["role_arn"] for hop in result["hops"]] == [target]
+    assert result["paths"] == [[start, target]]
 
 
 def test_walk_reuses_the_client_cache_for_a_role_reached_via_two_paths(iam):

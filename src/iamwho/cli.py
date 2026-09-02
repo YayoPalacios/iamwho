@@ -458,6 +458,35 @@ def normalize_egress_findings(result) -> list[dict]:
     return findings
 
 
+def normalize_chain_findings(result) -> list[dict]:
+    """Flatten a chain-walk tree into finding dicts, one group per role reached.
+
+    Every node of the walk carries its own egress payload, so the egress
+    normalizer applies per node. Without this the whole escalation path was
+    computed, emitted in --json, and then dropped before the exit code was
+    calculated: a role one PassRole away from admin exited 0, which in a CI
+    gate is indistinguishable from a clean run.
+
+    Each finding is tagged with the role it came from and its depth, since
+    findings pulled from several roles otherwise blend into one list with no
+    way to tell whose permission is whose. A node that failed to read
+    contributes nothing - normalize_egress_findings returns [] for an error
+    result, and that failure is surfaced separately by check_error.
+    """
+    if not isinstance(result, dict):
+        return []
+
+    findings = [
+        {**f, "role_arn": result.get("role_arn"), "depth": result.get("depth")}
+        for f in normalize_egress_findings(result.get("egress"))
+    ]
+
+    for hop in result.get("hops", []):
+        findings.extend(normalize_chain_findings(hop))
+
+    return findings
+
+
 def normalize_mutation_findings(result) -> list[dict]:
     """Convert mutation result to list of finding dicts."""
     if not isinstance(result, dict):
@@ -645,6 +674,7 @@ def analyze(
         raise typer.Exit(code=1)
 
     ingress_findings, egress_findings, mutation_findings = [], [], []
+    chain_findings: list[dict] = []
     json_results = {}
     check_errors: dict[str, str] = {}
     egress_result = None
@@ -696,6 +726,7 @@ def analyze(
             error = check_error(chain_result)
             if error:
                 check_errors["chain"] = error
+            chain_findings = normalize_chain_findings(chain_result)
             if output_json:
                 json_results["chain"] = chain_result
 
@@ -707,7 +738,9 @@ def analyze(
             console.print_exception()
         raise typer.Exit(code=1)
 
-    all_findings = ingress_findings + egress_findings + mutation_findings
+    all_findings = (
+        ingress_findings + egress_findings + mutation_findings + chain_findings
+    )
     exit_code = calculate_exit_code(all_findings, fail_on)
 
     # A check that could not read AWS must never exit 0: in a CI gate that is

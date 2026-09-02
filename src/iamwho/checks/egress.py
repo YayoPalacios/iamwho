@@ -9,6 +9,7 @@ Security Focus:
 - Condition presence
 """
 
+import re
 from typing import Any
 
 from iamwho.checks import _client
@@ -602,6 +603,41 @@ def _build_summary(findings: list[dict[str, Any]]) -> dict[str, Any]:
 HOP_ACTIONS: frozenset[str] = frozenset({"iam:PassRole", "sts:AssumeRole"})
 
 
+def _action_pattern_matches(pattern: str, action: str) -> bool:
+    """Does an IAM action pattern written in a policy match a concrete action?
+
+    IAM has two wildcard characters, "*" (any sequence) and "?" (any single
+    character), and action matching is case-insensitive. Everything else is
+    a literal, so the pattern is escaped before the wildcards are put back -
+    otherwise a "." in a pattern would match any character.
+
+    Deliberately stricter than _action_matches_any_pattern, which strips
+    wildcards and prefix-matches. That helper decides which dangerous
+    actions a NotAction statement *excludes*, where matching loosely errs
+    toward reporting less; here a miss erases a whole escalation edge, so
+    "iam:*Role" must not be read as the prefix "iam:Role".
+    """
+    regex = "".join(
+        ".*" if char == "*" else "." if char == "?" else re.escape(char)
+        for char in pattern
+    )
+    return re.fullmatch(regex, action, re.IGNORECASE) is not None
+
+
+def _grants_hop_action(action: str) -> bool:
+    """Whether a policy action grants iam:PassRole or sts:AssumeRole.
+
+    A finding's action is the literal string from the policy, so testing it
+    against HOP_ACTIONS by equality only ever caught a policy that spelled
+    the action out in full. "iam:*", "sts:*" and the bare "*" all grant the
+    hop, and they are exactly what the most privileged roles carry: the edge
+    vanished from the walk with no hop, no unresolved target and no
+    truncation marker - silently, which is the one thing the walk must never
+    do.
+    """
+    return any(_action_pattern_matches(action, hop) for hop in HOP_ACTIONS)
+
+
 def _partition_hop_resources(finding: dict[str, Any]) -> tuple[list[str], list[str]]:
     """Split a PassRole/AssumeRole finding's evidence resources into
     (resolved, unresolved) role targets.
@@ -616,7 +652,7 @@ def _partition_hop_resources(finding: dict[str, Any]) -> tuple[list[str], list[s
     resource type on a PassRole/AssumeRole statement) has no bearing on the
     chain walk.
     """
-    if finding.get("action") not in HOP_ACTIONS:
+    if not _grants_hop_action(str(finding.get("action") or "")):
         return [], []
 
     resolved: set[str] = set()
