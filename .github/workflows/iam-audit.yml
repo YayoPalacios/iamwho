@@ -1,9 +1,11 @@
 name: IAM Security Audit
 
+# Manual only. This workflow is the usage example from README.md: it audits a
+# real AWS account and needs AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY secrets
+# plus an IAM_ROLE_ARN variable, none of which are set on this repo. Running it
+# on push made every commit red. Copy it into your own repo to use it for real.
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
   audit:
