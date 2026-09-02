@@ -3,7 +3,7 @@
 
 > **iamwho: Static AWS IAM analyzer focused on post-compromise blast radius.**
 
-![iamwho demo](./assets/demo.png)
+![iamwho demo](https://raw.githubusercontent.com/YayoPalacios/iamwho/main/assets/demo.png)
 
 ---
 
@@ -14,7 +14,7 @@ The diagram below illustrates the difference between **access analysis** and **i
 - **Access analysis**: Determines whether an action is allowed.
 - **Impact analysis**: Identifies what else becomes reachable once an identity is compromised.
 
-![Impact vs Access analysis](assets/diagram.png)
+![Impact vs Access analysis](https://raw.githubusercontent.com/YayoPalacios/iamwho/main/assets/diagram.png)
 
 *iamwho* analyzes this graph to expose escalation paths and blast-radius expansions that remain hidden when policies are evaluated in isolation.
 
