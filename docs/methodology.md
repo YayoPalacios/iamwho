@@ -136,7 +136,10 @@ Rules:
   are never lowercased. `StringEqualsIgnoreCase` is the exception: it compares
   case-insensitively, so `Repo:My-Org/App` is rated as `repo:my-org/app`.
 - Condition key names match case-insensitively.
-- A multi-value list takes the severity of its broadest value.
+- A multi-value list takes the severity of its broadest value. A value iamwho
+  can't rate (not a string, or outside the `repo:` format) is never assumed
+  narrow. The list keeps a HIGH or CRITICAL value's severity, and is otherwise
+  reported as not evaluated, never LOW.
 - iamwho assumes the worst about the subject template. A repo-only custom
   claim template produces subjects with no context suffix, so a value without
   one is rated by its repository part: bare `repo:my-org/ap?` is HIGH, and
@@ -145,31 +148,81 @@ Rules:
   other or unknown context is MEDIUM: `pull_request` admits every
   pull-request workflow run in the repository.
 - `aud` never counts as scoping. Every GitHub token minted for AWS carries
-  `aud = sts.amazonaws.com`, so an `aud`-only trust is CRITICAL.
+  `aud = sts.amazonaws.com`, so an `aud`-only trust is CRITICAL. `aud` only
+  produces INFO notes (see below).
 - A `sub` condition that only uses negated operators (`StringNotEquals`,
   `StringNotLike`) is CRITICAL, because it admits every subject it doesn't
   name. `Null: false` is CRITICAL too, because it only asserts that the claim
   exists.
 - Condition blocks are ANDed, so when several blocks constrain `sub`, the
   narrowest positive (`StringEquals`, `StringLike`) block decides. Negated and
-  `Null: false` blocks never narrow it. If no positive block rates below
-  CRITICAL and another `sub` block can't be evaluated, the trust reports
-  MEDIUM, not evaluated.
+  `Null: false` blocks never narrow it, and neither does a block iamwho can't
+  evaluate: `StringLike sub = "repo:*"` beside an `ArnLike` or `Null: true`
+  block on `sub` is still CRITICAL. Only when no positive block was evaluated
+  and another `sub` block can't be evaluated (including beside a negation) does
+  the trust report MEDIUM, not evaluated.
 
-These are reported **MEDIUM**, not evaluated:
+#### Not evaluated
+
+A `sub` condition iamwho can't evaluate is reported **MEDIUM** with
+`subject_evaluated: false` and `subject_verdict: "NOT_EVALUATED"`. It is
+neither a false CRITICAL nor a reassuring LOW. The cases are:
 
 - `Null: true`. The claim must be absent, so no GitHub token matches.
 - a `sub` with no string values (an empty list, a number, an object). No
   token can match it.
 - a `sub` under any other operator
+- a value outside the `repo:` subject format, such as a custom claim template
+  (`StringLike sub = "repository_owner:*"`), unless a wildcard falls before
+  `repo:` is complete (`*`, `rep*`), which is CRITICAL
 
-Values that don't use the `repo:` subject format (custom claim templates) are
-not yet rated and report LOW, unless a wildcard falls before `repo:` is
-complete (`*`, `rep*`), which is CRITICAL.
+The raw `sub` blocks iamwho couldn't evaluate are attached to the finding as
+`unevaluated_sub_condition`. This also happens when an evaluated block still
+sets the verdict, for example the non-string entry in
+`["repo:my-org/*", {"x": 1}]` (HIGH).
+
+**Exit codes.** MEDIUM not-evaluated findings pass the default gate, which
+fails only on CRITICAL and HIGH. Use `--fail-on medium` to fail on them too.
+
+#### What is listed but never credited
+
+- **Other condition keys.** An evaluated `sub` verdict keeps its severity when
+  the statement has other condition keys (for example
+  `token.actions.githubusercontent.com:repository_owner` or `aws:SourceIp`).
+  Every key other than the GitHub `sub` and `aud` is listed under
+  `unevaluated_condition_keys`, and is not assumed to narrow access. So is
+  `aud` under any operator other than `StringEquals`,
+  `StringEqualsIgnoreCase` or `StringLike` (for example `StringNotEquals` or
+  `Null`).
+- **`Deny` statements.** Trust-policy `Deny` statements are listed raw under
+  the ingress result's `deny_statements` and never lower a finding.
+- **Several statements.** Each web-identity statement is rated on its own,
+  and the worst one sets the role's severity (`highest_risk`). For example, a
+  pinned statement next to a `repo:my-org/*` statement is HIGH.
+
+#### `aud` notes
+
+`audience_notes` holds INFO notes on the GitHub `aud` condition. They never
+change the `sub` verdict or the exit code:
+
+| `code` | When |
+|:-------|:-----|
+| `aud_missing` | No `aud` condition. Adding `sts.amazonaws.com` is defense in depth. |
+| `aud_unexpected` | An `aud` value other than `sts.amazonaws.com`. It may be a custom audience, or a role nobody can assume. |
+
+Each note is `{"code", "severity": "INFO", "message"}`. Values are compared
+with their operator's semantics: `StringLike aud = "sts.*"` matches
+`sts.amazonaws.com`, and `StringEqualsIgnoreCase` ignores case. An `aud` under
+any other operator produces no note and is listed under
+`unevaluated_condition_keys` instead.
+
+#### JSON fields
 
 The JSON finding for a GitHub trust carries `provider: "github"`,
-`subject_verdict` (the severity, or `NOT_EVALUATED`) and `subject_evaluated`.
-These fields are `null` for other principals.
+`subject_verdict` (the severity, or `NOT_EVALUATED`), `subject_evaluated`,
+`unevaluated_sub_condition`, `unevaluated_condition_keys` and
+`audience_notes`. These fields are `null` for other principals. The ingress
+result's `deny_statements` is filled for every role.
 
 With `-v`, a GitHub trust's conditions are shown as plainly present only when
 its subject verdict is LOW. Otherwise the line says that the conditions don't
