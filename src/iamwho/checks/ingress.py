@@ -70,12 +70,21 @@ def _analyze_statement(statement: dict[str, Any]) -> list[TrustFinding]:
 
     for principal in principals:
         principal_type = _classify_principal(principal)
-        risk, reasons = _assess_risk(
-            principal=principal,
-            principal_type=principal_type,
-            assume_type=assume_type,
-            conditions=conditions,
-        )
+        subject: dict[str, Any] = {}
+        if principal_type == PrincipalType.FEDERATED_OIDC and _is_github(principal):
+            risk, reasons, verdict = _assess_github(conditions)
+            subject = {
+                "provider": "github",
+                "subject_verdict": verdict,
+                "subject_evaluated": verdict != NOT_EVALUATED,
+            }
+        else:
+            risk, reasons = _assess_risk(
+                principal=principal,
+                principal_type=principal_type,
+                assume_type=assume_type,
+                conditions=conditions,
+            )
 
         findings.append(
             TrustFinding(
@@ -86,6 +95,7 @@ def _analyze_statement(statement: dict[str, Any]) -> list[TrustFinding]:
                 risk=risk,
                 conditions=conditions,
                 reasons=reasons,
+                **subject,
             )
         )
 
@@ -249,9 +259,6 @@ def _assess_risk(
         reasons.append("Service principal with confused deputy protection")
         return RiskLevel.INFO, reasons
 
-    if principal_type == PrincipalType.FEDERATED_OIDC and _is_github(principal):
-        return _assess_github(conditions)
-
     if principal_type == PrincipalType.FEDERATED_OIDC:
         if not conditions.has_oidc_claim_restriction:
             reasons.append(
@@ -310,44 +317,79 @@ def _is_github(principal: str) -> bool:
     return principal.lower().endswith(GITHUB_OIDC_PROVIDER_SUFFIX)
 
 
-def _assess_github(conditions: ConditionAnalysis) -> tuple[RiskLevel, list[str]]:
-    """Coarse GitHub Actions verdict: is the ``sub`` claim scoped at all?
+def _assess_github(
+    conditions: ConditionAnalysis,
+) -> tuple[RiskLevel, list[str], str]:
+    """Rate a GitHub Actions trust by who can satisfy its ``sub`` condition.
+
+    Returns the risk, the reasons and the subject verdict: the risk's value,
+    or ``NOT_EVALUATED``.
 
     ``aud`` never counts: every GitHub token minted for AWS carries
     ``sts.amazonaws.com``, so it does not narrow who can assume the role.
     """
-    remediation = (
-        "Remediation: Add a StringEquals condition on "
-        "token.actions.githubusercontent.com:sub pinning the repository "
-        "and ref or environment (e.g. repo:my-org/app:ref:refs/heads/main)"
-    )
     sub_blocks = _github_sub_blocks(conditions.raw_conditions)
     if not sub_blocks:
-        return RiskLevel.CRITICAL, [
+        return _rated(
+            RiskLevel.CRITICAL,
             "GitHub OIDC trust without a 'sub' condition "
             "(any GitHub Actions workflow, in any repository, can assume)",
-            remediation,
-        ]
+        )
 
-    verdicts = [(op, _github_sub_block_verdict(op, value)) for op, value in sub_blocks]
-    # Condition blocks are ANDed, so one scoping block is enough.
-    if any(v is SubVerdict.SCOPED for _, v in verdicts):
-        return RiskLevel.LOW, ["GitHub OIDC federation with 'sub' restriction"]
+    verdicts = [_github_sub_block_verdict(op, value) for op, value in sub_blocks]
+    # Condition blocks are ANDed, so the narrowest scoping block decides.
+    scoping = [
+        v for v in verdicts if isinstance(v, RiskLevel) and v < RiskLevel.CRITICAL
+    ]
+    if scoping:
+        risk = min(scoping)
+        if risk == RiskLevel.HIGH:
+            return _rated(
+                risk,
+                "GitHub OIDC 'sub' condition pins an organization but not a "
+                "repository (any GitHub Actions workflow in any repository of "
+                "that organization can assume)",
+            )
+        if risk == RiskLevel.MEDIUM:
+            return _rated(
+                risk,
+                "GitHub OIDC 'sub' condition pins a repository but not a ref or "
+                "environment (any workflow run in that repository can assume)",
+            )
+        return risk, ["GitHub OIDC federation with 'sub' restriction"], risk.value
     not_evaluated = sorted(
         _not_evaluated_label(op, value)
-        for (op, value), (_, v) in zip(sub_blocks, verdicts)
+        for (op, value), v in zip(sub_blocks, verdicts)
         if v is SubVerdict.NOT_EVALUATED
     )
     if not_evaluated:
-        return RiskLevel.MEDIUM, [
-            "GitHub OIDC 'sub' condition not evaluated "
-            f"({'; '.join(not_evaluated)}); review manually",
-        ]
-    return RiskLevel.CRITICAL, [
+        return (
+            RiskLevel.MEDIUM,
+            [
+                "GitHub OIDC 'sub' condition not evaluated "
+                f"({'; '.join(not_evaluated)}); review manually",
+            ],
+            NOT_EVALUATED,
+        )
+    return _rated(
+        RiskLevel.CRITICAL,
         "GitHub OIDC 'sub' condition does not pin an organization "
         "(any GitHub Actions workflow, in any repository, can assume)",
-        remediation,
-    ]
+    )
+
+
+NOT_EVALUATED = "NOT_EVALUATED"
+
+_GITHUB_REMEDIATION = (
+    "Remediation: Add a StringEquals condition on "
+    "token.actions.githubusercontent.com:sub pinning the repository "
+    "and ref or environment (e.g. repo:my-org/app:ref:refs/heads/main)"
+)
+
+
+def _rated(risk: RiskLevel, reason: str) -> tuple[RiskLevel, list[str], str]:
+    """An evaluated, overbroad GitHub subject: reason plus remediation."""
+    return risk, [reason, _GITHUB_REMEDIATION], risk.value
 
 
 GITHUB_SUB_KEY = "token.actions.githubusercontent.com:sub"
@@ -366,8 +408,13 @@ _NON_SCOPING_OPERATORS = {
 
 
 class SubVerdict(Enum):
-    SCOPED = "scoped"
-    UNSCOPED = "unscoped"
+    """A ``sub`` condition block that doesn't rate the subject.
+
+    Blocks that do rate it (positive operators with string values) return a
+    :class:`RiskLevel` instead.
+    """
+
+    UNSCOPED = "unscoped"  # negated operators, Null: false
     NOT_EVALUATED = "not_evaluated"
 
 
@@ -395,14 +442,12 @@ def _operator_base(operator: str) -> str:
     return base.removesuffix("ifexists")
 
 
-def _github_sub_block_verdict(operator: str, value: Any) -> SubVerdict:
-    """Coarse check: does this condition block pin at least an organization?
+def _github_sub_block_verdict(operator: str, value: Any) -> RiskLevel | SubVerdict:
+    """Rate one condition block on ``sub``.
 
-    Full ``sub`` evaluation (repo, ref, environment) is not done here.
-    ``StringEquals`` values are literal. A ``StringLike`` value pins nothing
-    when the text before its first wildcard ends before a complete
-    ``repo:<org>/`` (see :func:`_pins_no_org`). The values in one block are
-    ORed, so a single such value makes the whole block unscoped.
+    ``StringEquals`` values are literal; ``StringLike`` values are
+    case-sensitive globs. The values in one block are ORed, so the block takes
+    the risk of its broadest value.
     """
     base = _operator_base(operator)
     if base == "null":
@@ -417,9 +462,52 @@ def _github_sub_block_verdict(operator: str, value: Any) -> SubVerdict:
     values = [v for v in _normalize_to_list(value) if isinstance(v, str)]
     if not values:
         return SubVerdict.NOT_EVALUATED
-    if base in _GLOB_OPERATORS and any(_pins_no_org(v) for v in values):
-        return SubVerdict.UNSCOPED
-    return SubVerdict.SCOPED
+    glob = base in _GLOB_OPERATORS
+    if base.endswith("ignorecase"):
+        # Case-insensitive literal: "Repo:My-Org/App" is "repo:my-org/app".
+        values = [v.lower() for v in values]
+    return max(_github_sub_value_risk(v, glob) for v in values)
+
+
+def _github_sub_value_risk(value: str, glob: bool) -> RiskLevel:
+    """Rate one ``sub`` value by who can satisfy it.
+
+    Only the text before the first wildcard is pinned; a literal pins all of
+    it. The subject template is assumed to be the worst case: a value with no
+    context suffix (``repo:my-org/app``) is satisfied by every ref under a
+    repo-only custom template. Only a literal ``ref:`` or ``environment:``
+    context pins the trust; ``pull_request`` admits every pull-request run.
+    """
+    literal = _literal_prefix(value) if glob else value
+    wildcard = literal != value
+    if wildcard and _pins_no_org(literal):
+        return RiskLevel.CRITICAL
+    if not literal.startswith("repo:"):
+        return RiskLevel.LOW
+    _org, slash, repo = literal.removeprefix("repo:").partition("/")
+    if not slash:
+        # A literal such as "repo:*": no GitHub subject has this form.
+        return RiskLevel.LOW
+    _name, colon, context = repo.partition(":")
+    if not colon:
+        # Repo name not complete (wildcard) or no context suffix (literal).
+        return RiskLevel.HIGH if wildcard else RiskLevel.MEDIUM
+    if wildcard or not _pins_ref_or_environment(context):
+        # Any ref, pull_request, or a context iamwho doesn't know.
+        return RiskLevel.MEDIUM
+    return RiskLevel.LOW
+
+
+def _pins_ref_or_environment(context: str) -> bool:
+    """True for a literal ``ref:<name>`` or ``environment:<name>`` context."""
+    kind, _, name = context.partition(":")
+    return kind in ("ref", "environment") and bool(name)
+
+
+def _literal_prefix(pattern: str) -> str:
+    """The text of a glob before its first ``*`` or ``?``."""
+    wildcards = [i for i in (pattern.find("*"), pattern.find("?")) if i != -1]
+    return pattern[: min(wildcards)] if wildcards else pattern
 
 
 def _not_evaluated_label(operator: str, value: Any) -> str:
@@ -443,17 +531,14 @@ def _null_sub_verdict(value: Any) -> SubVerdict:
     return SubVerdict.NOT_EVALUATED
 
 
-def _pins_no_org(pattern: str) -> bool:
-    """True when a glob can match a subject in an org the attacker registers.
+def _pins_no_org(literal: str) -> bool:
+    """True when a glob's literal prefix leaves the org open to an attacker.
 
     That is: the wildcard falls inside ``repo:`` itself (``*``, ``repo:*``)
-    or inside the org name (``repo:my-org*``, ``repo:my-or?/*``). Values that
-    don't use the ``repo:`` template are left to full evaluation.
+    or inside the org name (``repo:my-org*``, ``repo:my-or?/*``), so anyone
+    can register a matching org. Values that don't use the ``repo:`` template
+    are not rated here.
     """
-    wildcards = [i for i in (pattern.find("*"), pattern.find("?")) if i != -1]
-    if not wildcards:
-        return False
-    literal = pattern[: min(wildcards)]
     if "repo:".startswith(literal):
         return True
     return literal.startswith("repo:") and "/" not in literal
