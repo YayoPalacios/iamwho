@@ -142,3 +142,13 @@ second, longer path only ever appears in the path of its shorter one.
 - Version bumps: `pyproject.toml` only — everything else derives from package
   metadata. Tag the release.
 - Never commit `dist/`, `.idea/`, or `.DS_Store`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for `YayoPalacios/iamwho` (via `gh`). See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
