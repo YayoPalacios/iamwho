@@ -1,6 +1,7 @@
 # src/iamwho/checks/ingress.py
 """INGRESS check: Analyze who/what can assume a role via trust policy."""
 
+import re
 from enum import Enum
 from typing import Any
 
@@ -39,6 +40,10 @@ def analyze_ingress(role_arn: str) -> IngressResult:
         statements = [statements]
 
     for statement in statements:
+        if statement.get("Effect") == "Deny":
+            # Deny is not evaluated: listed, never credited as narrowing.
+            result.deny_statements.append(statement)
+            continue
         if statement.get("Effect") != "Allow":
             continue
         findings = _analyze_statement(statement)
@@ -72,12 +77,7 @@ def _analyze_statement(statement: dict[str, Any]) -> list[TrustFinding]:
         principal_type = _classify_principal(principal)
         subject: dict[str, Any] = {}
         if principal_type == PrincipalType.FEDERATED_OIDC and _is_github(principal):
-            risk, reasons, verdict = _assess_github(conditions)
-            subject = {
-                "provider": "github",
-                "subject_verdict": verdict,
-                "subject_evaluated": verdict != NOT_EVALUATED,
-            }
+            risk, reasons, subject = _assess_github(conditions)
         else:
             risk, reasons = _assess_risk(
                 principal=principal,
@@ -319,6 +319,136 @@ def _is_github(principal: str) -> bool:
 
 def _assess_github(
     conditions: ConditionAnalysis,
+) -> tuple[RiskLevel, list[str], dict[str, Any]]:
+    """Rate a GitHub Actions trust and report what was not evaluated.
+
+    Returns the risk, the reasons and the GitHub fields of the finding.
+    """
+    sub_blocks = _github_sub_blocks(conditions.raw_conditions)
+    verdicts = [_github_sub_block_verdict(op, value) for op, _, value in sub_blocks]
+    risk, reasons, verdict = _rate_github_sub(sub_blocks, verdicts)
+
+    unevaluated: dict[str, dict[str, Any]] = {}
+    for (op, key, value), v in zip(sub_blocks, verdicts):
+        # A rated block can still hold unrated values (["repo:my-org/*", 42]).
+        partly_rated = (
+            isinstance(v, RiskLevel) and _rate_sub_values(_operator_base(op), value)[1]
+        )
+        if v is SubVerdict.NOT_EVALUATED or partly_rated:
+            unevaluated.setdefault(op, {})[key] = value
+
+    return (
+        risk,
+        reasons,
+        {
+            "provider": "github",
+            "subject_verdict": verdict,
+            "subject_evaluated": verdict != NOT_EVALUATED,
+            "unevaluated_sub_condition": unevaluated or None,
+            "unevaluated_condition_keys": _github_unevaluated_keys(
+                conditions.raw_conditions
+            ),
+            "audience_notes": _github_audience_notes(conditions.raw_conditions),
+        },
+    )
+
+
+GITHUB_AUDIENCE = "sts.amazonaws.com"
+
+
+def _github_audience_notes(raw_conditions: dict[str, Any]) -> list[dict[str, str]]:
+    """INFO notes on a GitHub trust's ``aud``. They never change the ``sub``
+    verdict: any workflow can mint a token with the default audience.
+
+    Only positive string operators are read, with their semantics (literal,
+    case-insensitive literal, case-sensitive glob). ``aud`` under any other
+    operator gets no note; it is listed under ``unevaluated_condition_keys``.
+    """
+    aud_blocks = [
+        (operator, value)
+        for operator, block in raw_conditions.items()
+        if isinstance(block, dict)
+        for key, value in block.items()
+        if key.lower() == GITHUB_AUD_KEY
+    ]
+    if not aud_blocks:
+        return [
+            _info(
+                "aud_missing",
+                f"No 'aud' condition; add {GITHUB_AUDIENCE} as defense in "
+                "depth (it does not scope who can assume)",
+            )
+        ]
+    unexpected = [
+        str(v)
+        for operator, value in aud_blocks
+        if _is_positive_string(operator)
+        for v in _sub_values(value)
+        if not _admits_default_audience(_operator_base(operator), v)
+    ]
+    if unexpected:
+        return [
+            _info(
+                "aud_unexpected",
+                f"'aud' {', '.join(unexpected)} is not {GITHUB_AUDIENCE}: it may "
+                "be a custom audience, or a role nobody can assume",
+            )
+        ]
+    return []
+
+
+def _admits_default_audience(base: str, value: Any) -> bool:
+    """Whether one ``aud`` value matches ``sts.amazonaws.com``."""
+    if not isinstance(value, str):
+        return False
+    if base in _GLOB_OPERATORS:
+        return _glob_matches(value, GITHUB_AUDIENCE)
+    if base.endswith("ignorecase"):
+        return value.lower() == GITHUB_AUDIENCE
+    return value == GITHUB_AUDIENCE
+
+
+def _glob_matches(pattern: str, text: str) -> bool:
+    """IAM ``StringLike``: case-sensitive, ``*`` and ``?`` only."""
+    regex = "".join(
+        ".*" if c == "*" else "." if c == "?" else re.escape(c) for c in pattern
+    )
+    return re.fullmatch(regex, text, re.DOTALL) is not None
+
+
+def _info(code: str, message: str) -> dict[str, str]:
+    return {"code": code, "severity": RiskLevel.INFO.value, "message": message}
+
+
+def _github_unevaluated_keys(raw_conditions: dict[str, Any]) -> list[str]:
+    """Condition keys iamwho did not evaluate, as written: every key other than
+    GitHub ``sub`` and ``aud``, plus ``aud`` under an operator other than a
+    positive string operator. (``sub`` blocks iamwho can't evaluate are
+    attached whole as ``unevaluated_sub_condition``.)
+
+    iamwho lists them but never credits them as narrowing (ADR-0001).
+    """
+    keys: set[str] = set()
+    for operator, block in raw_conditions.items():
+        if not isinstance(block, dict):
+            continue
+        for key in block:
+            name = key.lower()
+            if name == GITHUB_SUB_KEY:
+                continue
+            if name == GITHUB_AUD_KEY and _is_positive_string(operator):
+                continue
+            keys.add(key)
+    return sorted(keys)
+
+
+def _is_positive_string(operator: str) -> bool:
+    return _operator_base(operator) in _LITERAL_OPERATORS | _GLOB_OPERATORS
+
+
+def _rate_github_sub(
+    sub_blocks: list[tuple[str, str, Any]],
+    verdicts: list["RiskLevel | SubVerdict"],
 ) -> tuple[RiskLevel, list[str], str]:
     """Rate a GitHub Actions trust by who can satisfy its ``sub`` condition.
 
@@ -328,7 +458,6 @@ def _assess_github(
     ``aud`` never counts: every GitHub token minted for AWS carries
     ``sts.amazonaws.com``, so it does not narrow who can assume the role.
     """
-    sub_blocks = _github_sub_blocks(conditions.raw_conditions)
     if not sub_blocks:
         return _rated(
             RiskLevel.CRITICAL,
@@ -336,7 +465,6 @@ def _assess_github(
             "(any GitHub Actions workflow, in any repository, can assume)",
         )
 
-    verdicts = [_github_sub_block_verdict(op, value) for op, value in sub_blocks]
     # Condition blocks are ANDed, so the narrowest scoping block decides.
     scoping = [
         v for v in verdicts if isinstance(v, RiskLevel) and v < RiskLevel.CRITICAL
@@ -359,10 +487,12 @@ def _assess_github(
         return risk, ["GitHub OIDC federation with 'sub' restriction"], risk.value
     not_evaluated = sorted(
         _not_evaluated_label(op, value)
-        for (op, value), v in zip(sub_blocks, verdicts)
+        for (op, _, value), v in zip(sub_blocks, verdicts)
         if v is SubVerdict.NOT_EVALUATED
     )
-    if not_evaluated:
+    # A positive block that admits all of GitHub is evaluated; a block beside
+    # it that iamwho can't evaluate is never credited as narrowing it.
+    if not_evaluated and RiskLevel.CRITICAL not in verdicts:
         return (
             RiskLevel.MEDIUM,
             [
@@ -393,6 +523,7 @@ def _rated(risk: RiskLevel, reason: str) -> tuple[RiskLevel, list[str], str]:
 
 
 GITHUB_SUB_KEY = "token.actions.githubusercontent.com:sub"
+GITHUB_AUD_KEY = "token.actions.githubusercontent.com:aud"
 
 # Operator base names (lowercased, without ForAnyValue:/ForAllValues: or
 # IfExists). Positive operators can scope ``sub``; negated operators admit
@@ -420,18 +551,19 @@ class SubVerdict(Enum):
 
 def _github_sub_blocks(
     raw_conditions: dict[str, Any],
-) -> list[tuple[str, Any]]:
-    """Return ``(operator, value)`` for every condition on the GitHub sub key.
+) -> list[tuple[str, str, Any]]:
+    """Return ``(operator, key, value)`` for every condition on the GitHub sub
+    key.
 
-    Key names match case-insensitively; values are left untouched.
+    Key names match case-insensitively; keys and values are left as written.
     """
-    blocks: list[tuple[str, Any]] = []
+    blocks: list[tuple[str, str, Any]] = []
     for operator, block in raw_conditions.items():
         if not isinstance(block, dict):
             continue
         for key, value in block.items():
             if key.lower() == GITHUB_SUB_KEY:
-                blocks.append((operator, value))
+                blocks.append((operator, key, value))
     return blocks
 
 
@@ -447,7 +579,9 @@ def _github_sub_block_verdict(operator: str, value: Any) -> RiskLevel | SubVerdi
 
     ``StringEquals`` values are literal; ``StringLike`` values are
     case-sensitive globs. The values in one block are ORed, so the block takes
-    the risk of its broadest value.
+    the risk of its broadest value. A value iamwho can't rate (not a string, or
+    not in the ``repo:`` subject format) is never assumed narrow: the block is
+    not evaluated unless another value already rates it HIGH or CRITICAL.
     """
     base = _operator_base(operator)
     if base == "null":
@@ -457,19 +591,41 @@ def _github_sub_block_verdict(operator: str, value: Any) -> RiskLevel | SubVerdi
     if base not in _LITERAL_OPERATORS | _GLOB_OPERATORS:
         return SubVerdict.NOT_EVALUATED
 
-    # No string values: nothing a token's sub could match. Not overbroad,
-    # but not a scoping iamwho evaluates either.
-    values = [v for v in _normalize_to_list(value) if isinstance(v, str)]
-    if not values:
+    # No ratable values (an empty list, a number, an object): nothing iamwho
+    # can rate. With some unratable values, only a HIGH or CRITICAL one rates
+    # the block, since the rest could admit anything.
+    risks, unrated = _rate_sub_values(base, value)
+    if not risks or (unrated and max(risks) < RiskLevel.HIGH):
         return SubVerdict.NOT_EVALUATED
+    return max(risks)
+
+
+def _sub_values(value: Any) -> list[Any]:
+    return _normalize_to_list(value) if isinstance(value, (str, list)) else [value]
+
+
+def _rate_sub_values(base: str, value: Any) -> tuple[list[RiskLevel], bool]:
+    """The risks of a positive block's ratable values, and whether any value
+    could not be rated."""
     glob = base in _GLOB_OPERATORS
-    if base.endswith("ignorecase"):
-        # Case-insensitive literal: "Repo:My-Org/App" is "repo:my-org/app".
-        values = [v.lower() for v in values]
-    return max(_github_sub_value_risk(v, glob) for v in values)
+    risks: list[RiskLevel] = []
+    unrated = False
+    for entry in _sub_values(value):
+        if not isinstance(entry, str):
+            unrated = True
+            continue
+        if base.endswith("ignorecase"):
+            # Case-insensitive literal: "Repo:My-Org/App" is "repo:my-org/app".
+            entry = entry.lower()
+        risk = _github_sub_value_risk(entry, glob)
+        if isinstance(risk, RiskLevel):
+            risks.append(risk)
+        else:
+            unrated = True
+    return risks, unrated
 
 
-def _github_sub_value_risk(value: str, glob: bool) -> RiskLevel:
+def _github_sub_value_risk(value: str, glob: bool) -> RiskLevel | SubVerdict:
     """Rate one ``sub`` value by who can satisfy it.
 
     Only the text before the first wildcard is pinned; a literal pins all of
@@ -477,13 +633,15 @@ def _github_sub_value_risk(value: str, glob: bool) -> RiskLevel:
     context suffix (``repo:my-org/app``) is satisfied by every ref under a
     repo-only custom template. Only a literal ``ref:`` or ``environment:``
     context pins the trust; ``pull_request`` admits every pull-request run.
+    A value outside the ``repo:`` format (a custom claim template such as
+    ``repository_owner:my-org``) is not evaluated.
     """
     literal = _literal_prefix(value) if glob else value
     wildcard = literal != value
     if wildcard and _pins_no_org(literal):
         return RiskLevel.CRITICAL
     if not literal.startswith("repo:"):
-        return RiskLevel.LOW
+        return SubVerdict.NOT_EVALUATED
     _org, slash, repo = literal.removeprefix("repo:").partition("/")
     if not slash:
         # A literal such as "repo:*": no GitHub subject has this form.
@@ -514,9 +672,14 @@ def _not_evaluated_label(operator: str, value: Any) -> str:
     base = _operator_base(operator)
     if base == "null":
         return f"{operator}: true"
-    if base in _LITERAL_OPERATORS | _GLOB_OPERATORS:
+    if base not in _LITERAL_OPERATORS | _GLOB_OPERATORS:
+        return f"unrecognised operator {operator}"
+    entries = _sub_values(value)
+    if not any(isinstance(v, str) for v in entries):
         return f"{operator} with no string values"
-    return f"unrecognised operator {operator}"
+    if not all(isinstance(v, str) for v in entries):
+        return f"{operator} with a non-string value"
+    return f"{operator} value outside the 'repo:' subject format"
 
 
 def _null_sub_verdict(value: Any) -> SubVerdict:

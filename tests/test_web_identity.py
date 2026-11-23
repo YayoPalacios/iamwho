@@ -8,7 +8,10 @@ principals were misclassified as AWS services.
 
 Issue #7 fixed those verdicts; #8 rates a GitHub ``sub`` by who can satisfy
 it: anyone on GitHub (CRITICAL), anyone in one org (HIGH), any ref in one
-repository (MEDIUM), or a pinned ref or environment (LOW).
+repository (MEDIUM), or a pinned ref or environment (LOW). #9 reports what
+that evaluation could not check (unevaluated ``sub`` blocks and values, other
+condition keys, ``Deny`` statements) without crediting it as narrowing, and
+adds INFO notes on ``aud``.
 """
 
 import json
@@ -436,6 +439,9 @@ def test_subject_fields_leave_existing_fields_unchanged(iam):
         "provider",
         "subject_verdict",
         "subject_evaluated",
+        "unevaluated_sub_condition",
+        "unevaluated_condition_keys",
+        "audience_notes",
     }
     assert finding["principal"] == GITHUB
     assert finding["principal_type"] == "FederatedOIDC"
@@ -451,6 +457,9 @@ def test_non_github_findings_leave_subject_fields_unset(iam):
     assert finding["provider"] is None
     assert finding["subject_verdict"] is None
     assert finding["subject_evaluated"] is None
+    assert finding["unevaluated_sub_condition"] is None
+    assert finding["unevaluated_condition_keys"] is None
+    assert finding["audience_notes"] is None
 
 
 def test_subject_evaluation_reads_only_the_trust_policy(iam):
@@ -598,3 +607,320 @@ def test_other_providers_keep_their_verdicts(
 
     assert [f["risk"] for f in findings] == [expected_risk]
     assert exit_code == expected_exit
+
+
+# =============================================================================
+# WHAT GITHUB EVALUATION COULD NOT CHECK (#9)
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        pytest.param(like("repository_owner:*"), id="custom-claim-glob"),
+        pytest.param(equals("repository_owner:my-org"), id="custom-claim-literal"),
+        pytest.param(like("REPO:*"), id="uppercase-prefix"),  # globs are case-sensitive
+    ],
+)
+def test_sub_value_outside_repo_format_is_not_evaluated(iam, condition):
+    exit_code, findings = run_ingress(iam, web_identity_trust(GITHUB, condition))
+
+    [finding] = findings
+    assert finding["risk"] == "MEDIUM"
+    assert finding["subject_verdict"] == "NOT_EVALUATED"
+    assert finding["subject_evaluated"] is False
+    assert exit_code == 0
+
+
+@pytest.mark.parametrize("value", ["*", "rep*", "re?o:my-org/app:*"])
+def test_wildcard_before_repo_prefix_is_complete_stays_critical(iam, value):
+    _, findings = run_ingress(iam, web_identity_trust(GITHUB, like(value)))
+
+    [finding] = findings
+    assert finding["risk"] == "CRITICAL"
+    assert finding["subject_evaluated"] is True
+
+
+def test_verbose_does_not_show_custom_claim_sub_as_scoping(iam):
+    trust = web_identity_trust(GITHUB, like("repository_owner:*"))
+
+    line = verbose_conditions_line(iam, trust)
+
+    assert line == "Conditions: present, but 'sub' was not evaluated"
+
+
+@pytest.mark.parametrize(
+    "unevaluated",
+    [
+        pytest.param({"ArnLike": {GITHUB_SUB: PINNED}}, id="unrecognised-operator"),
+        pytest.param({"Null": {GITHUB_SUB: "true"}}, id="null-true"),
+    ],
+)
+def test_unevaluated_sub_block_is_never_credited_as_narrowing(iam, unevaluated):
+    """ADR-0001: ``repo:*`` stays CRITICAL; the block beside it isn't credited."""
+    trust = web_identity_trust(
+        GITHUB, {"StringLike": {GITHUB_SUB: "repo:*"}, **unevaluated}
+    )
+
+    exit_code, findings = run_ingress(iam, trust)
+
+    [finding] = findings
+    assert finding["risk"] == "CRITICAL"
+    assert finding["subject_verdict"] == "CRITICAL"
+    assert exit_code == 2
+
+
+@pytest.mark.parametrize(
+    "values,risk,verdict",
+    [
+        pytest.param([PINNED, {"x": 1}], "MEDIUM", "NOT_EVALUATED", id="pinned"),
+        pytest.param(
+            [PINNED, "repository_owner:my-org"],
+            "MEDIUM",
+            "NOT_EVALUATED",
+            id="custom-claim",
+        ),
+        pytest.param(["repo:my-org/*", {"x": 1}], "HIGH", "HIGH", id="high-keeps"),
+        pytest.param(["repo:*", 42], "CRITICAL", "CRITICAL", id="critical-keeps"),
+    ],
+)
+def test_sub_list_is_not_rated_on_its_string_values_alone(iam, values, risk, verdict):
+    _, findings = run_ingress(iam, web_identity_trust(GITHUB, like(values)))
+
+    [finding] = findings
+    assert finding["risk"] == risk
+    assert finding["subject_verdict"] == verdict
+
+
+@pytest.mark.parametrize(
+    "condition,attached",
+    [
+        pytest.param(
+            {"ArnLike": {GITHUB_SUB: PINNED}},
+            {"ArnLike": {GITHUB_SUB: PINNED}},
+            id="unrecognised-operator",
+        ),
+        pytest.param(
+            {"StringLike": {GITHUB_SUB: "repo:*"}, "Null": {ODD_CASE_SUB: "true"}},
+            {"Null": {ODD_CASE_SUB: "true"}},
+            id="beside-critical",
+        ),
+        pytest.param(
+            like(["repo:my-org/*", {"x": 1}]),
+            like(["repo:my-org/*", {"x": 1}]),
+            id="mixed-list",
+        ),
+        pytest.param(
+            {**equals(PINNED), "StringNotLike": {GITHUB_SUB: "repo:x/*"}},
+            None,
+            id="all-evaluated",
+        ),
+        pytest.param(None, None, id="no-sub"),
+    ],
+)
+def test_unevaluated_sub_condition_is_attached_raw(iam, condition, attached):
+    _, findings = run_ingress(iam, web_identity_trust(GITHUB, condition))
+
+    [finding] = findings
+    assert finding["unevaluated_sub_condition"] == attached
+
+
+OWNER_KEY = "token.actions.githubusercontent.com:repository_owner"
+
+
+@pytest.mark.parametrize(
+    "sub,risk",
+    [
+        pytest.param("repo:*", "CRITICAL", id="critical"),
+        pytest.param(PINNED, "LOW", id="low"),
+    ],
+)
+def test_evaluated_sub_keeps_its_severity_beside_unevaluated_keys(iam, sub, risk):
+    trust = web_identity_trust(
+        GITHUB,
+        {
+            "StringLike": {GITHUB_SUB: sub, OWNER_KEY: "my-org"},
+            "StringEquals": {GITHUB_AUD: "sts.amazonaws.com"},
+            "IpAddress": {"aws:SourceIp": "203.0.113.0/24"},
+        },
+    )
+
+    _, findings = run_ingress(iam, trust)
+
+    [finding] = findings
+    assert finding["risk"] == risk
+    assert finding["subject_verdict"] == risk
+    assert finding["unevaluated_condition_keys"] == ["aws:SourceIp", OWNER_KEY]
+
+
+def test_github_trust_with_only_sub_and_aud_lists_no_unevaluated_keys(iam):
+    trust = web_identity_trust(
+        GITHUB,
+        {"StringEquals": {GITHUB_AUD: "sts.amazonaws.com", ODD_CASE_SUB: PINNED}},
+    )
+
+    _, findings = run_ingress(iam, trust)
+
+    [finding] = findings
+    assert finding["unevaluated_condition_keys"] == []
+
+
+def audience_codes(finding):
+    assert all(
+        n["severity"] == "INFO" and n["message"] for n in finding["audience_notes"]
+    )
+    return [n["code"] for n in finding["audience_notes"]]
+
+
+@pytest.mark.parametrize(
+    "aud,codes",
+    [
+        pytest.param(None, ["aud_missing"], id="missing"),
+        pytest.param(
+            {"StringEquals": {GITHUB_AUD: "my-custom-audience"}},
+            ["aud_unexpected"],
+            id="unexpected",
+        ),
+        pytest.param(
+            {"StringEquals": {GITHUB_AUD: ["sts.amazonaws.com", "other"]}},
+            ["aud_unexpected"],
+            id="unexpected-in-list",
+        ),
+        pytest.param(
+            {
+                "StringEquals": {
+                    "Token.Actions.GitHubUserContent.com:AUD": "sts.amazonaws.com"
+                }
+            },
+            [],
+            id="expected",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "sub,risk",
+    [
+        pytest.param(PINNED, "LOW", id="pinned"),
+        pytest.param("repo:*", "CRITICAL", id="any-org"),
+    ],
+)
+def test_github_aud_produces_info_notes_only(iam, aud, codes, sub, risk):
+    """``aud`` never changes the ``sub`` verdict (ADR-0001)."""
+    trust = web_identity_trust(GITHUB, {**like(sub), **(aud or {})})
+
+    exit_code, findings = run_ingress(iam, trust)
+
+    [finding] = findings
+    assert audience_codes(finding) == codes
+    assert finding["risk"] == risk
+    assert finding["subject_verdict"] == risk
+    assert exit_code == GATE_EXIT.get(risk, 0)
+
+
+def run_ingress_payload(iam, trust_policy, *args):
+    arn = iam.add_role("Deploy", trust_policy=trust_policy)
+    result = runner.invoke(app, ["analyze", arn, "--json", "--check", "ingress", *args])
+    return result.exit_code, json.loads(result.output)["checks"]["ingress"]
+
+
+def test_trust_policy_deny_is_listed_and_never_lowers_the_verdict(iam):
+    trust = web_identity_trust(GITHUB, like("repo:*"))
+    deny = {
+        "Sid": "BlockOutsiders",
+        "Effect": "Deny",
+        "Principal": {"Federated": GITHUB},
+        "Action": "sts:AssumeRoleWithWebIdentity",
+        "Condition": {"StringNotLike": {GITHUB_SUB: "repo:my-org/*"}},
+    }
+    trust["Statement"].append(deny)
+
+    exit_code, ingress = run_ingress_payload(iam, trust)
+
+    assert ingress["deny_statements"] == [deny]
+    assert [f["risk"] for f in ingress["findings"]] == ["CRITICAL"]
+    assert ingress["highest_risk"] == "CRITICAL"
+    assert exit_code == 2
+
+
+def test_trust_policy_without_deny_lists_none(iam):
+    _, ingress = run_ingress_payload(iam, web_identity_trust(GITHUB, equals(PINNED)))
+
+    assert ingress["deny_statements"] == []
+
+
+def test_worst_of_several_web_identity_statements_sets_the_role_severity(iam):
+    tight = web_identity_trust(GITHUB, equals(PINNED))["Statement"][0]
+    broad = web_identity_trust(GITHUB, like("repo:my-org/*"))["Statement"][0]
+    trust = {"Version": "2012-10-17", "Statement": [tight, broad]}
+
+    exit_code, ingress = run_ingress_payload(iam, trust)
+
+    assert sorted(f["risk"] for f in ingress["findings"]) == ["HIGH", "LOW"]
+    assert ingress["highest_risk"] == "HIGH"
+    assert exit_code == 1
+
+
+@pytest.mark.parametrize(
+    "args,expected_exit",
+    [
+        pytest.param([], 0, id="default-gate-passes"),
+        pytest.param(["--fail-on", "high"], 0, id="fail-on-high-passes"),
+        pytest.param(["--fail-on", "medium"], 1, id="fail-on-medium-fails"),
+    ],
+)
+def test_not_evaluated_sub_gates_as_medium(iam, args, expected_exit):
+    trust = web_identity_trust(GITHUB, {"ArnLike": {GITHUB_SUB: PINNED}})
+
+    exit_code, ingress = run_ingress_payload(iam, trust, *args)
+
+    [finding] = ingress["findings"]
+    assert finding["subject_evaluated"] is False
+    assert exit_code == expected_exit
+
+
+@pytest.mark.parametrize(
+    "aud,codes",
+    [
+        pytest.param({"StringLike": {GITHUB_AUD: "sts.*"}}, [], id="glob-matching-sts"),
+        pytest.param({"StringLike": {GITHUB_AUD: "*"}}, [], id="glob-star"),
+        pytest.param(
+            {"StringLike": {GITHUB_AUD: "STS.*"}},
+            ["aud_unexpected"],
+            id="glob-is-case-sensitive",
+        ),
+        pytest.param(
+            {"StringEqualsIgnoreCase": {GITHUB_AUD: "STS.AmazonAWS.com"}},
+            [],
+            id="ignore-case",
+        ),
+    ],
+)
+def test_github_aud_notes_honor_operator_semantics(iam, aud, codes):
+    trust = web_identity_trust(GITHUB, {**equals(PINNED), **aud})
+
+    _, findings = run_ingress(iam, trust)
+
+    [finding] = findings
+    assert audience_codes(finding) == codes
+
+
+@pytest.mark.parametrize(
+    "aud",
+    [
+        pytest.param({"Null": {GITHUB_AUD: "false"}}, id="null"),
+        pytest.param(
+            {"StringNotEquals": {GITHUB_AUD: "sts.amazonaws.com"}}, id="negated"
+        ),
+        pytest.param({"ArnLike": {GITHUB_AUD: "sts.amazonaws.com"}}, id="unrecognised"),
+    ],
+)
+def test_github_aud_under_other_operators_is_listed_not_noted(iam, aud):
+    """Neither a misleading note nor silently dropped."""
+    trust = web_identity_trust(GITHUB, {**like(PINNED), **aud})
+
+    _, findings = run_ingress(iam, trust)
+
+    [finding] = findings
+    assert audience_codes(finding) == []
+    assert finding["unevaluated_condition_keys"] == [GITHUB_AUD]
+    assert finding["risk"] == "LOW"

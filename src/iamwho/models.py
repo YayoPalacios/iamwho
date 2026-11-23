@@ -108,6 +108,13 @@ class TrustFinding:
     provider: str | None = None
     subject_verdict: str | None = None
     subject_evaluated: bool | None = None
+    # The sub condition blocks iamwho could not evaluate, in Condition shape,
+    # or None when every block was evaluated.
+    unevaluated_sub_condition: dict[str, Any] | None = None
+    # Condition keys present but not evaluated (never credited as narrowing).
+    unevaluated_condition_keys: list[str] | None = None
+    # INFO notes on aud: [{"code", "severity", "message"}].
+    audience_notes: list[dict[str, str]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON output."""
@@ -126,6 +133,9 @@ class TrustFinding:
             "provider": self.provider,
             "subject_verdict": self.subject_verdict,
             "subject_evaluated": self.subject_evaluated,
+            "unevaluated_sub_condition": self.unevaluated_sub_condition,
+            "unevaluated_condition_keys": self.unevaluated_condition_keys,
+            "audience_notes": self.audience_notes,
         }
 
 
@@ -137,6 +147,9 @@ class IngressResult:
     findings: list[TrustFinding] = field(default_factory=list)
     highest_risk: RiskLevel = field(default_factory=lambda: RiskLevel.INFO)
     error: str | None = None
+    # Trust-policy Deny statements, raw. Not evaluated: they are listed but
+    # never lower a finding's risk.
+    deny_statements: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON output."""
@@ -146,4 +159,5 @@ class IngressResult:
             "finding_count": len(self.findings),
             "findings": [f.to_dict() for f in self.findings],
             "error": self.error,
+            "deny_statements": self.deny_statements,
         }
