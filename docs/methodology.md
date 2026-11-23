@@ -112,11 +112,34 @@ iamwho treats missing source conditions as **MEDIUM** by default.
 
 ### OIDC / Web Identity
 
-Missing subject scoping is **CRITICAL**.
+For **GitHub Actions** (the public issuer `token.actions.githubusercontent.com`),
+missing subject scoping is **CRITICAL**: any workflow in any repository on
+GitHub can assume the role. That covers:
+
+- no `sub` condition at all
+- an `aud`-only condition. Every GitHub token minted for AWS carries
+  `aud = sts.amazonaws.com`, so `aud` never counts as scoping.
+- a `StringLike` `sub` pattern with a wildcard before a complete organization
+  name, such as `*`, `repo:*`, `repo:my-org*` or `repo:my-or?/*`. Anyone can
+  register an organization that matches. One such value in a multi-value list
+  is enough.
+- a `sub` condition that only uses negated operators (`StringNotEquals`,
+  `StringNotLike`) or `Null`. These admit every subject they don't name.
+
+`StringEquals` values are literal, so `StringEquals sub = "repo:*"` is not a
+wildcard. A `sub` under any other operator is reported **MEDIUM**, not
+evaluated. A wildcard in the repository name only (`repo:my-org/*`) is not yet
+distinguished from a pinned repository, and reports LOW.
+
+This rule applies to GitHub only. Other OIDC providers (EKS, generic IdPs, and
+GitHub Enterprise custom issuers) are **HIGH** when they carry neither `sub` nor
+`aud`, and LOW otherwise. Cognito identity pools (`cognito-identity.amazonaws.com`)
+are classified as federated OIDC, not as an AWS service, so the confused-deputy
+rule does not apply to them.
 
 | Provider | Required Conditions |
 |:---------|:-------------------|
-| GitHub Actions | `aud` + constrained `sub` |
+| GitHub Actions | Constrained `sub` (`aud` recommended, but never counts as scoping) |
 | EKS | Cluster-scoped `sub` |
 | Cognito | `sub`, `aud` |
 

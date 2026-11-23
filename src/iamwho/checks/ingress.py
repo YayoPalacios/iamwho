@@ -1,6 +1,7 @@
 # src/iamwho/checks/ingress.py
 """INGRESS check: Analyze who/what can assume a role via trust policy."""
 
+from enum import Enum
 from typing import Any
 
 from iamwho.checks import _client
@@ -140,6 +141,11 @@ def _classify_principal(principal: str) -> PrincipalType:
     if principal == "*":
         return PrincipalType.WILDCARD
 
+    # Cognito identity pools federate through web identity; checked before
+    # the service rule, which its ".amazonaws.com" suffix would otherwise hit.
+    if principal.lower() == "cognito-identity.amazonaws.com":
+        return PrincipalType.FEDERATED_OIDC
+
     if principal.endswith(".amazonaws.com") or principal.endswith(".aws.internal"):
         return PrincipalType.SERVICE
 
@@ -243,6 +249,9 @@ def _assess_risk(
         reasons.append("Service principal with confused deputy protection")
         return RiskLevel.INFO, reasons
 
+    if principal_type == PrincipalType.FEDERATED_OIDC and _is_github(principal):
+        return _assess_github(conditions)
+
     if principal_type == PrincipalType.FEDERATED_OIDC:
         if not conditions.has_oidc_claim_restriction:
             reasons.append(
@@ -289,6 +298,136 @@ def _assess_risk(
 
     reasons.append("Unclassified principal type - review manually")
     return RiskLevel.MEDIUM, reasons
+
+
+# Only the public GitHub issuer. GitHub Enterprise custom issuers
+# (token.actions.githubusercontent.com/<enterprise>) are deliberately not
+# treated as GitHub (ADR-0001) and keep the generic OIDC verdict.
+GITHUB_OIDC_PROVIDER_SUFFIX = ":oidc-provider/token.actions.githubusercontent.com"
+
+
+def _is_github(principal: str) -> bool:
+    return principal.lower().endswith(GITHUB_OIDC_PROVIDER_SUFFIX)
+
+
+def _assess_github(conditions: ConditionAnalysis) -> tuple[RiskLevel, list[str]]:
+    """Coarse GitHub Actions verdict: is the ``sub`` claim scoped at all?
+
+    ``aud`` never counts: every GitHub token minted for AWS carries
+    ``sts.amazonaws.com``, so it does not narrow who can assume the role.
+    """
+    remediation = (
+        "Remediation: Add a StringEquals condition on "
+        "token.actions.githubusercontent.com:sub pinning the repository "
+        "and ref or environment (e.g. repo:my-org/app:ref:refs/heads/main)"
+    )
+    sub_blocks = _github_sub_blocks(conditions.raw_conditions)
+    if not sub_blocks:
+        return RiskLevel.CRITICAL, [
+            "GitHub OIDC trust without a 'sub' condition "
+            "(any GitHub Actions workflow, in any repository, can assume)",
+            remediation,
+        ]
+
+    verdicts = [(op, _github_sub_block_verdict(op, value)) for op, value in sub_blocks]
+    # Condition blocks are ANDed, so one scoping block is enough.
+    if any(v is SubVerdict.SCOPED for _, v in verdicts):
+        return RiskLevel.LOW, ["GitHub OIDC federation with 'sub' restriction"]
+    operators = sorted(op for op, v in verdicts if v is SubVerdict.NOT_EVALUATED)
+    if operators:
+        return RiskLevel.MEDIUM, [
+            "GitHub OIDC 'sub' condition not evaluated "
+            f"(unrecognised operator: {', '.join(operators)}); review manually",
+        ]
+    return RiskLevel.CRITICAL, [
+        "GitHub OIDC 'sub' condition does not pin an organization "
+        "(any GitHub Actions workflow, in any repository, can assume)",
+        remediation,
+    ]
+
+
+GITHUB_SUB_KEY = "token.actions.githubusercontent.com:sub"
+
+# Operator base names (lowercased, without ForAnyValue:/ForAllValues: or
+# IfExists). Positive operators can scope ``sub``; negated operators and Null
+# admit everything they don't name, so they never scope it.
+_LITERAL_OPERATORS = {"stringequals", "stringequalsignorecase"}
+_GLOB_OPERATORS = {"stringlike"}
+_NON_SCOPING_OPERATORS = {
+    "stringnotequals",
+    "stringnotequalsignorecase",
+    "stringnotlike",
+    "null",
+}
+
+
+class SubVerdict(Enum):
+    SCOPED = "scoped"
+    UNSCOPED = "unscoped"
+    NOT_EVALUATED = "not_evaluated"
+
+
+def _github_sub_blocks(
+    raw_conditions: dict[str, Any],
+) -> list[tuple[str, Any]]:
+    """Return ``(operator, value)`` for every condition on the GitHub sub key.
+
+    Key names match case-insensitively; values are left untouched.
+    """
+    blocks: list[tuple[str, Any]] = []
+    for operator, block in raw_conditions.items():
+        if not isinstance(block, dict):
+            continue
+        for key, value in block.items():
+            if key.lower() == GITHUB_SUB_KEY:
+                blocks.append((operator, value))
+    return blocks
+
+
+def _operator_base(operator: str) -> str:
+    base = operator.lower()
+    for qualifier in ("foranyvalue:", "forallvalues:"):
+        base = base.removeprefix(qualifier)
+    return base.removesuffix("ifexists")
+
+
+def _github_sub_block_verdict(operator: str, value: Any) -> SubVerdict:
+    """Coarse check: does this condition block pin at least an organization?
+
+    Full ``sub`` evaluation (repo, ref, environment) is not done here.
+    ``StringEquals`` values are literal. A ``StringLike`` value pins nothing
+    when the text before its first wildcard ends before a complete
+    ``repo:<org>/`` (see :func:`_pins_no_org`). The values in one block are
+    ORed, so a single such value makes the whole block unscoped.
+    """
+    base = _operator_base(operator)
+    if base in _NON_SCOPING_OPERATORS:
+        return SubVerdict.UNSCOPED
+    if base not in _LITERAL_OPERATORS | _GLOB_OPERATORS:
+        return SubVerdict.NOT_EVALUATED
+
+    values = [v for v in _normalize_to_list(value) if isinstance(v, str)]
+    if not values:
+        return SubVerdict.UNSCOPED
+    if base in _GLOB_OPERATORS and any(_pins_no_org(v) for v in values):
+        return SubVerdict.UNSCOPED
+    return SubVerdict.SCOPED
+
+
+def _pins_no_org(pattern: str) -> bool:
+    """True when a glob can match a subject in an org the attacker registers.
+
+    That is: the wildcard falls inside ``repo:`` itself (``*``, ``repo:*``)
+    or inside the org name (``repo:my-org*``, ``repo:my-or?/*``). Values that
+    don't use the ``repo:`` template are left to full evaluation.
+    """
+    wildcards = [i for i in (pattern.find("*"), pattern.find("?")) if i != -1]
+    if not wildcards:
+        return False
+    literal = pattern[: min(wildcards)]
+    if "repo:".startswith(literal):
+        return True
+    return literal.startswith("repo:") and "/" not in literal
 
 
 # =============================================================================
