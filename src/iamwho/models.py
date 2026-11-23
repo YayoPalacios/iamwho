@@ -103,6 +103,11 @@ class TrustFinding:
     risk: RiskLevel
     conditions: ConditionAnalysis
     reasons: list[str] = field(default_factory=list)
+    # Set for web-identity providers whose subject iamwho evaluates (GitHub).
+    # subject_verdict is a RiskLevel value or "NOT_EVALUATED".
+    provider: str | None = None
+    subject_verdict: str | None = None
+    subject_evaluated: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON output."""
@@ -118,6 +123,9 @@ class TrustFinding:
                 "cross_account_protected": self.conditions.has_cross_account_protection,
                 "raw": self.conditions.raw_conditions,
             },
+            "provider": self.provider,
+            "subject_verdict": self.subject_verdict,
+            "subject_evaluated": self.subject_evaluated,
         }
 
 

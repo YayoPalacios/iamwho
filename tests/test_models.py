@@ -83,6 +83,32 @@ def test_ordering_still_works():
     assert RiskLevel.LOW > RiskLevel.INFO
 
 
+def test_levels_order_by_severity_not_alphabetically():
+    """Alphabetically, HIGH < INFO < LOW < MEDIUM; by severity it's the reverse
+    for most of them."""
+    shuffled = [
+        RiskLevel.MEDIUM,
+        RiskLevel.CRITICAL,
+        RiskLevel.INFO,
+        RiskLevel.HIGH,
+        RiskLevel.LOW,
+    ]
+
+    assert sorted(shuffled) == [
+        RiskLevel.INFO,
+        RiskLevel.LOW,
+        RiskLevel.MEDIUM,
+        RiskLevel.HIGH,
+        RiskLevel.CRITICAL,
+    ]
+
+
+def test_min_picks_the_lowest_risk():
+    """ingress uses min() over ANDed sub blocks: the narrowest one decides."""
+    assert min([RiskLevel.HIGH, RiskLevel.LOW]) == RiskLevel.LOW
+    assert min([RiskLevel.HIGH, RiskLevel.MEDIUM]) == RiskLevel.MEDIUM
+
+
 def test_max_picks_the_highest_risk():
     """ingress uses max() over finding risks."""
     levels = [RiskLevel.LOW, RiskLevel.CRITICAL, RiskLevel.MEDIUM]

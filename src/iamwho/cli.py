@@ -208,7 +208,7 @@ def print_finding(finding: dict, verbose: bool = False):
             cond_text = Text()
             cond_text.append("           ", style="dim")
             cond_text.append("Conditions: ", style="dim")
-            cond_text.append("present", style="green")
+            cond_text.append(*_conditions_status(finding))
             console.print(cond_text)
 
         # Evidence block (policy-only, deterministic)
@@ -247,6 +247,30 @@ def print_finding(finding: dict, verbose: bool = False):
                 bullet = Text("             - ", style="dim")
                 bullet.append(label, style="cyan")
                 console.print(bullet)
+
+
+# What a GitHub trust's conditions still admit, by subject verdict.
+_GITHUB_CONDITIONS_STATUS = {
+    "CRITICAL": "present, but they do not scope 'sub'",
+    "HIGH": "present, but 'sub' admits any repository in the org",
+    "MEDIUM": "present, but 'sub' admits more than a pinned ref or environment",
+    "NOT_EVALUATED": "present, but 'sub' was not evaluated",
+}
+
+
+def _conditions_status(finding: dict) -> tuple[str, str]:
+    """Text and style for the verbose "Conditions:" line.
+
+    A GitHub trust's conditions only scope it through ``sub``; ``aud`` never
+    does (ADR-0001). So they read as reassuring only when the subject verdict
+    is LOW; otherwise the line says what the ``sub`` pattern still admits.
+    """
+    if finding.get("provider") == "github":
+        verdict = finding.get("subject_verdict")
+        if verdict == "LOW":
+            return "present", "green"
+        return _GITHUB_CONDITIONS_STATUS.get(verdict, "present"), "yellow"
+    return "present", "green"
 
 
 def print_no_findings(message: str = "No findings detected"):
@@ -424,6 +448,8 @@ def normalize_ingress_findings(result) -> list[dict]:
                 "conditions": getattr(
                     getattr(f, "conditions", None), "raw_conditions", {}
                 ),
+                "provider": getattr(f, "provider", None),
+                "subject_verdict": getattr(f, "subject_verdict", None),
             }
         )
 

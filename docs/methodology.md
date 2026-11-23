@@ -113,23 +113,48 @@ iamwho treats missing source conditions as **MEDIUM** by default.
 ### OIDC / Web Identity
 
 For **GitHub Actions** (the public issuer
-`token.actions.githubusercontent.com`), missing subject scoping is
-**CRITICAL**: any workflow in any repository on GitHub can assume the role.
-That covers:
+`token.actions.githubusercontent.com`), iamwho evaluates the `sub` condition's
+operator and values. The severity depends on **who can satisfy the pattern**:
 
-- no `sub` condition at all
-- an `aud`-only condition. Every GitHub token minted for AWS carries
-  `aud = sts.amazonaws.com`, so `aud` never counts as scoping.
-- a `StringLike` `sub` pattern with a wildcard before a complete organization
-  name, such as `*`, `repo:*`, `repo:my-org*` or `repo:my-or?/*`. Anyone can
-  register an organization that matches. One such value in a multi-value list
-  is enough.
-- a `sub` condition that only uses negated operators (`StringNotEquals`,
-  `StringNotLike`), which admit every subject they don't name, or
-  `Null: false`, which only asserts that the claim exists.
+| Severity | Who can assume | Examples |
+|:---------|:---------------|:---------|
+| **CRITICAL** | Anyone on GitHub | no `sub`; `repo:*`; a wildcard in the org part (`repo:my-org*/*`, `repo:my-or?/*`) |
+| **HIGH** | Anyone in the org | a wildcard in the repository name, with the org pinned (`repo:my-org/*`, `repo:my-org/app*`, `repo:my-org/ap?:*`) |
+| **MEDIUM** | One repository, any ref or any other context | `repo:my-org/app:*`, `repo:my-org/app:ref:refs/heads/*`, `repo:my-org/app:pull_request`, `StringEquals repo:my-org/app` |
+| **LOW** | One repository, a literal `ref:` or `environment:` | `repo:my-org/app:ref:refs/heads/main`, `repo:my-org/app:environment:prod` |
 
-`StringEquals` values are literal, so `StringEquals sub = "repo:*"` is not a
-wildcard.
+A wildcard in the org part is CRITICAL because anyone can register an
+organization that matches. A pinned ref does not lower a CRITICAL or HIGH
+pattern: `repo:my-org/*:ref:refs/heads/main` is still HIGH.
+
+Rules:
+
+- `*` and `?` are both wildcards. Only the text before the first wildcard
+  counts as pinned.
+- `StringEquals` values are literal, so `StringEquals sub = "repo:*"` is not a
+  wildcard. `StringLike` values are case-sensitive glob patterns, and values
+  are never lowercased. `StringEqualsIgnoreCase` is the exception: it compares
+  case-insensitively, so `Repo:My-Org/App` is rated as `repo:my-org/app`.
+- Condition key names match case-insensitively.
+- A multi-value list takes the severity of its broadest value.
+- iamwho assumes the worst about the subject template. A repo-only custom
+  claim template produces subjects with no context suffix, so a value without
+  one is rated by its repository part: bare `repo:my-org/ap?` is HIGH, and
+  `StringEquals sub = "repo:my-org/app"` is MEDIUM.
+- Only a literal `ref:<name>` or `environment:<name>` context is LOW. Any
+  other or unknown context is MEDIUM: `pull_request` admits every
+  pull-request workflow run in the repository.
+- `aud` never counts as scoping. Every GitHub token minted for AWS carries
+  `aud = sts.amazonaws.com`, so an `aud`-only trust is CRITICAL.
+- A `sub` condition that only uses negated operators (`StringNotEquals`,
+  `StringNotLike`) is CRITICAL, because it admits every subject it doesn't
+  name. `Null: false` is CRITICAL too, because it only asserts that the claim
+  exists.
+- Condition blocks are ANDed, so when several blocks constrain `sub`, the
+  narrowest positive (`StringEquals`, `StringLike`) block decides. Negated and
+  `Null: false` blocks never narrow it. If no positive block rates below
+  CRITICAL and another `sub` block can't be evaluated, the trust reports
+  MEDIUM, not evaluated.
 
 These are reported **MEDIUM**, not evaluated:
 
@@ -138,8 +163,19 @@ These are reported **MEDIUM**, not evaluated:
   token can match it.
 - a `sub` under any other operator
 
-A wildcard in the repository name only (`repo:my-org/*`) is not yet
-distinguished from a pinned repository, and reports LOW.
+Values that don't use the `repo:` subject format (custom claim templates) are
+not yet rated and report LOW, unless a wildcard falls before `repo:` is
+complete (`*`, `rep*`), which is CRITICAL.
+
+The JSON finding for a GitHub trust carries `provider: "github"`,
+`subject_verdict` (the severity, or `NOT_EVALUATED`) and `subject_evaluated`.
+These fields are `null` for other principals.
+
+With `-v`, a GitHub trust's conditions are shown as plainly present only when
+its subject verdict is LOW. Otherwise the line says that the conditions don't
+scope `sub` (CRITICAL), what the `sub` pattern still admits (any repository in
+the org for HIGH, more than a pinned ref or environment for MEDIUM), or that
+it was not evaluated.
 
 This rule applies to GitHub only. Other OIDC providers (EKS, generic IdPs, and
 GitHub Enterprise custom issuers) are **HIGH** when they carry neither `sub` nor
