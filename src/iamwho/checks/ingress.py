@@ -333,11 +333,15 @@ def _assess_github(conditions: ConditionAnalysis) -> tuple[RiskLevel, list[str]]
     # Condition blocks are ANDed, so one scoping block is enough.
     if any(v is SubVerdict.SCOPED for _, v in verdicts):
         return RiskLevel.LOW, ["GitHub OIDC federation with 'sub' restriction"]
-    operators = sorted(op for op, v in verdicts if v is SubVerdict.NOT_EVALUATED)
-    if operators:
+    not_evaluated = sorted(
+        _not_evaluated_label(op, value)
+        for (op, value), (_, v) in zip(sub_blocks, verdicts)
+        if v is SubVerdict.NOT_EVALUATED
+    )
+    if not_evaluated:
         return RiskLevel.MEDIUM, [
             "GitHub OIDC 'sub' condition not evaluated "
-            f"(unrecognised operator: {', '.join(operators)}); review manually",
+            f"({'; '.join(not_evaluated)}); review manually",
         ]
     return RiskLevel.CRITICAL, [
         "GitHub OIDC 'sub' condition does not pin an organization "
@@ -349,15 +353,15 @@ def _assess_github(conditions: ConditionAnalysis) -> tuple[RiskLevel, list[str]]
 GITHUB_SUB_KEY = "token.actions.githubusercontent.com:sub"
 
 # Operator base names (lowercased, without ForAnyValue:/ForAllValues: or
-# IfExists). Positive operators can scope ``sub``; negated operators and Null
-# admit everything they don't name, so they never scope it.
+# IfExists). Positive operators can scope ``sub``; negated operators admit
+# everything they don't name, so they never scope it. Null is split by value
+# in _github_sub_block_verdict.
 _LITERAL_OPERATORS = {"stringequals", "stringequalsignorecase"}
 _GLOB_OPERATORS = {"stringlike"}
 _NON_SCOPING_OPERATORS = {
     "stringnotequals",
     "stringnotequalsignorecase",
     "stringnotlike",
-    "null",
 }
 
 
@@ -401,17 +405,42 @@ def _github_sub_block_verdict(operator: str, value: Any) -> SubVerdict:
     ORed, so a single such value makes the whole block unscoped.
     """
     base = _operator_base(operator)
+    if base == "null":
+        return _null_sub_verdict(value)
     if base in _NON_SCOPING_OPERATORS:
         return SubVerdict.UNSCOPED
     if base not in _LITERAL_OPERATORS | _GLOB_OPERATORS:
         return SubVerdict.NOT_EVALUATED
 
+    # No string values: nothing a token's sub could match. Not overbroad,
+    # but not a scoping iamwho evaluates either.
     values = [v for v in _normalize_to_list(value) if isinstance(v, str)]
     if not values:
-        return SubVerdict.UNSCOPED
+        return SubVerdict.NOT_EVALUATED
     if base in _GLOB_OPERATORS and any(_pins_no_org(v) for v in values):
         return SubVerdict.UNSCOPED
     return SubVerdict.SCOPED
+
+
+def _not_evaluated_label(operator: str, value: Any) -> str:
+    base = _operator_base(operator)
+    if base == "null":
+        return f"{operator}: true"
+    if base in _LITERAL_OPERATORS | _GLOB_OPERATORS:
+        return f"{operator} with no string values"
+    return f"unrecognised operator {operator}"
+
+
+def _null_sub_verdict(value: Any) -> SubVerdict:
+    """``Null: false`` only asserts the claim exists, and every GitHub token
+    carries ``sub``, so it scopes nothing. ``Null: true`` requires the claim to
+    be absent, which no GitHub token satisfies: not overbroad, but not a
+    scoping iamwho evaluates either. Values are ORed, so one ``false`` wins.
+    """
+    values = value if isinstance(value, list) else [value]
+    if any(str(v).lower() == "false" for v in values):
+        return SubVerdict.UNSCOPED
+    return SubVerdict.NOT_EVALUATED
 
 
 def _pins_no_org(pattern: str) -> bool:

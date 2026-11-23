@@ -147,11 +147,15 @@ def test_one_broad_value_in_a_sub_list_makes_it_critical(iam):
         ),
         pytest.param(
             {"Null": {GITHUB_SUB: "false"}},
-            id="null-operator",  # only asserts the claim exists
+            id="null-false",  # only asserts the claim exists
         ),
         pytest.param(
-            {"StringLike": {GITHUB_SUB: []}},
-            id="empty-value-list",
+            {"Null": {GITHUB_SUB: False}},
+            id="null-false-bool",
+        ),
+        pytest.param(
+            {"Null": {GITHUB_SUB: ["true", "false"]}},
+            id="null-list-with-false",  # values are ORed
         ),
     ],
 )
@@ -178,13 +182,35 @@ def test_negated_sub_alongside_a_pinned_sub_stays_low(iam):
     assert exit_code == 0
 
 
-def test_unrecognised_sub_operator_is_not_evaluated(iam):
-    """Neither a false CRITICAL nor a reassuring LOW (ADR-0001)."""
-    trust = web_identity_trust(
-        GITHUB, {"ArnLike": {GITHUB_SUB: "repo:my-org/app:ref:refs/heads/main"}}
-    )
+PINNED = "repo:my-org/app:ref:refs/heads/main"
 
-    exit_code, findings = run_ingress(iam, trust)
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        # Null: true requires the claim to be absent; no GitHub token is.
+        pytest.param({"Null": {GITHUB_SUB: "true"}}, id="null-true"),
+        pytest.param({"Null": {GITHUB_SUB: True}}, id="null-true-bool"),
+        # No string values: nothing a token's sub could match.
+        pytest.param({"StringLike": {GITHUB_SUB: []}}, id="empty-value-list"),
+        pytest.param({"StringEquals": {GITHUB_SUB: 42}}, id="non-string-value"),
+        pytest.param(
+            {"StringEquals": {GITHUB_SUB: [{"repo": "my-org"}]}},
+            id="non-string-list",
+        ),
+        pytest.param({"ArnLike": {GITHUB_SUB: PINNED}}, id="unrecognised-operator"),
+        pytest.param(
+            {
+                "ArnLike": {GITHUB_SUB: PINNED},
+                "StringNotLike": {GITHUB_SUB: "repo:evil-org/*"},
+            },
+            id="unrecognised-operator-alongside-negation",
+        ),
+    ],
+)
+def test_github_sub_condition_iamwho_cannot_rate_is_not_evaluated(iam, condition):
+    """Neither a false CRITICAL nor a reassuring LOW (ADR-0001)."""
+    exit_code, findings = run_ingress(iam, web_identity_trust(GITHUB, condition))
 
     [finding] = findings
     assert finding["risk"] == "MEDIUM"
