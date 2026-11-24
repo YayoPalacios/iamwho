@@ -265,11 +265,19 @@ def _conditions_status(finding: dict) -> tuple[str, str]:
     does (ADR-0001). So they read as reassuring only when the subject verdict
     is LOW; otherwise the line says what the ``sub`` pattern still admits.
     """
-    if finding.get("provider") == "github":
-        verdict = finding.get("subject_verdict")
+    provider = finding.get("provider")
+    verdict = finding.get("subject_verdict")
+    if provider == "github":
         if verdict == "LOW":
             return "present", "green"
         return _GITHUB_CONDITIONS_STATUS.get(verdict, "present"), "yellow"
+    # Other web-identity providers: only the identifying key's presence is
+    # checked, so their conditions never read as reassuring.
+    if verdict == "NOT_EVALUATED":
+        return "present, but not evaluated", "yellow"
+    if verdict in ("CRITICAL", "HIGH"):
+        claim = "aud" if provider == "cognito" else "sub"
+        return f"present, but they do not scope '{claim}'", "yellow"
     return "present", "green"
 
 
