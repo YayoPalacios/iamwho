@@ -76,8 +76,15 @@ def _analyze_statement(statement: dict[str, Any]) -> list[TrustFinding]:
     for principal in principals:
         principal_type = _classify_principal(principal)
         subject: dict[str, Any] = {}
-        if principal_type == PrincipalType.FEDERATED_OIDC and _is_github(principal):
+        provider = _web_identity_provider(principal, principal_type)
+        if provider == "github":
             risk, reasons, subject = _assess_github(conditions)
+        elif provider == "saml":
+            risk, reasons, subject = _assess_saml(conditions)
+        elif provider is not None:
+            risk, reasons, subject = _assess_key_presence(
+                principal, provider, conditions
+            )
         else:
             risk, reasons = _assess_risk(
                 principal=principal,
@@ -201,12 +208,13 @@ def _analyze_conditions(raw_conditions: dict[str, Any]) -> ConditionAnalysis:
             analysis.has_principal_org_id = True
         elif key_lower == "aws:principalarn":
             analysis.has_principal_arn = True
+        elif key_lower == "saml:aud":
+            # Before the generic ":aud" match, which would shadow it.
+            analysis.has_saml_aud = True
         elif ":sub" in key_lower:
             analysis.has_oidc_sub_claim = True
         elif ":aud" in key_lower:
             analysis.has_oidc_aud_claim = True
-        elif key_lower == "saml:aud":
-            analysis.has_saml_aud = True
 
     return analysis
 
@@ -259,23 +267,8 @@ def _assess_risk(
         reasons.append("Service principal with confused deputy protection")
         return RiskLevel.INFO, reasons
 
-    if principal_type == PrincipalType.FEDERATED_OIDC:
-        if not conditions.has_oidc_claim_restriction:
-            reasons.append(
-                "OIDC federation without sub/aud claim restriction "
-                "(any token from this IdP can assume)"
-            )
-            reasons.append(
-                "Remediation: Add Condition restricting the 'sub' claim "
-                "(e.g., token.actions.githubusercontent.com:sub for GitHub Actions)"
-            )
-            return RiskLevel.HIGH, reasons
-        reasons.append("OIDC federation with claim restrictions")
-        return RiskLevel.LOW, reasons
-
-    if principal_type == PrincipalType.FEDERATED_SAML:
-        reasons.append("SAML federation (verify IdP is trusted)")
-        return RiskLevel.LOW, reasons
+    # Federated OIDC and SAML principals never reach here: they are rated by
+    # provider (_assess_github, _assess_key_presence, _assess_saml).
 
     if principal_type == PrincipalType.AWS_ROOT:
         if not conditions.has_cross_account_protection:
@@ -315,6 +308,127 @@ GITHUB_OIDC_PROVIDER_SUFFIX = ":oidc-provider/token.actions.githubusercontent.co
 
 def _is_github(principal: str) -> bool:
     return principal.lower().endswith(GITHUB_OIDC_PROVIDER_SUFFIX)
+
+
+def _web_identity_provider(principal: str, principal_type: PrincipalType) -> str | None:
+    """The stable ``provider`` value of a federated principal, or None."""
+    if principal_type == PrincipalType.FEDERATED_SAML:
+        return "saml"
+    if principal_type != PrincipalType.FEDERATED_OIDC:
+        return None
+    if _is_github(principal):
+        return "github"
+    if principal.lower() == COGNITO_PRINCIPAL:
+        return "cognito"
+    issuer = _oidc_issuer(principal)
+    if issuer.startswith(GITHUB_ENTERPRISE_ISSUER_PREFIX):
+        # Tagged, but rated as a generic provider (ADR-0001).
+        return "github_enterprise"
+    if issuer.startswith("oidc.eks."):
+        return "eks"
+    return "generic_oidc"
+
+
+GITHUB_ENTERPRISE_ISSUER_PREFIX = "token.actions.githubusercontent.com/"
+
+
+COGNITO_PRINCIPAL = "cognito-identity.amazonaws.com"
+
+
+def _oidc_issuer(principal: str) -> str:
+    """The issuer a federated OIDC principal names, lowercased: the prefix of
+    its condition keys (``<issuer>:sub``)."""
+    if principal.lower() == COGNITO_PRINCIPAL:
+        return COGNITO_PRINCIPAL
+    return principal.lower().partition(":oidc-provider/")[2]
+
+
+def _identifying_key(principal: str, provider: str) -> str:
+    """The condition key that identifies who may assume: the identity pool
+    (``aud``) for Cognito, the subject (``sub``) for every other provider."""
+    claim = "aud" if provider == "cognito" else "sub"
+    return f"{_oidc_issuer(principal)}:{claim}"
+
+
+def _assess_key_presence(
+    principal: str, provider: str, conditions: ConditionAnalysis
+) -> tuple[RiskLevel, list[str], dict[str, Any]]:
+    """Rate a web-identity trust whose condition values iamwho doesn't evaluate.
+
+    Only the presence of the identifying key is checked (ADR-0001): without
+    it, any token from the IdP (for Cognito, from any identity pool in any
+    account) can assume the role. A key that only appears under negated
+    operators or ``Null: false`` scopes nothing, so it counts as absent.
+    """
+    key = _identifying_key(principal, provider)
+    blocks = [
+        operator
+        for operator, block in conditions.raw_conditions.items()
+        if isinstance(block, dict)
+        for k, value in block.items()
+        if k.lower() == key and not _is_unscoping(operator, value)
+    ]
+    if not blocks:
+        if provider == "cognito":
+            risk = RiskLevel.CRITICAL
+            admits = "any identity pool, in any AWS account, can mint a token"
+            pins = "the identity pool ID"
+        else:
+            risk = RiskLevel.HIGH
+            admits = "any token from this IdP can assume"
+            pins = "the expected subject"
+        reasons = [
+            f"Web-identity trust without a '{key}' condition that scopes it "
+            f"({admits}; negated operators and Null: false don't scope)",
+            f"Remediation: Add a StringEquals condition on {key} pinning {pins}",
+        ]
+        return risk, reasons, _subject_fields(provider, risk.value, True)
+    reasons = [
+        f"Web-identity '{key}' condition present but not evaluated "
+        "(iamwho evaluates condition values for GitHub Actions only); "
+        "review manually"
+    ]
+    return RiskLevel.MEDIUM, reasons, _subject_fields(provider, NOT_EVALUATED, False)
+
+
+def _assess_saml(
+    conditions: ConditionAnalysis,
+) -> tuple[RiskLevel, list[str], dict[str, Any]]:
+    """SAML stays LOW: iamwho evaluates no SAML assertion attributes. It only
+    notes a missing ``saml:aud``, which never changes the risk."""
+    notes = []
+    if not conditions.has_saml_aud:
+        notes.append(
+            _info(
+                "saml_aud_missing",
+                "No 'saml:aud' condition; add one pinning the AWS sign-in "
+                "endpoint as defense in depth",
+            )
+        )
+    return (
+        RiskLevel.LOW,
+        ["SAML federation (verify IdP is trusted)"],
+        {**_subject_fields("saml", None, False), "audience_notes": notes},
+    )
+
+
+def _is_unscoping(operator: str, value: Any) -> bool:
+    """Whether a condition block admits every token carrying the claim: a
+    negated operator, or ``Null: false`` (ADR-0001)."""
+    base = _operator_base(operator)
+    if base == "null":
+        return _null_sub_verdict(value) is SubVerdict.UNSCOPED
+    return base in _NON_SCOPING_OPERATORS
+
+
+def _subject_fields(
+    provider: str, verdict: str | None, evaluated: bool
+) -> dict[str, Any]:
+    return {
+        "provider": provider,
+        "subject_verdict": verdict,
+        "subject_evaluated": evaluated,
+    }
 
 
 def _assess_github(
@@ -877,6 +991,8 @@ def format_findings(result: IngressResult) -> str:
             protections.append("OIDC:sub")
         if cond.has_oidc_aud_claim:
             protections.append("OIDC:aud")
+        if cond.has_saml_aud:
+            protections.append("SAML:aud")
 
         if protections:
             lines.append(f"    Conditions: {', '.join(protections)}")
