@@ -358,28 +358,40 @@ def _assess_key_presence(
     Only the presence of the identifying key is checked (ADR-0001): without
     it, any token from the IdP (for Cognito, from any identity pool in any
     account) can assume the role. A key that only appears under negated
-    operators or ``Null: false`` scopes nothing, so it counts as absent.
+    operators, ``Null: false`` or ``StringLike "*"`` scopes nothing, so it
+    counts as absent.
+
+    For Cognito, a literal identity ID in ``sub`` also pins the trust:
+    Cognito generates identity IDs, so an attacker can't pick a matching one.
     """
     key = _identifying_key(principal, provider)
-    blocks = [
-        operator
-        for operator, block in conditions.raw_conditions.items()
-        if isinstance(block, dict)
-        for k, value in block.items()
-        if k.lower() == key and not _is_unscoping(operator, value)
-    ]
-    if not blocks:
+    present = _scoping_blocks(conditions.raw_conditions, key)
+    sub_blocks: list[tuple[str, Any]] = []
+    if provider == "cognito" and not present:
+        sub_key = f"{COGNITO_PRINCIPAL}:sub"
+        sub_blocks = _scoping_blocks(conditions.raw_conditions, sub_key)
+        if any(_is_literal_identity(op, value) for op, value in sub_blocks):
+            key, present = sub_key, sub_blocks
+    if not present:
         if provider == "cognito":
             risk = RiskLevel.CRITICAL
-            admits = "any identity pool, in any AWS account, can mint a token"
             pins = "the identity pool ID"
+            if sub_blocks:
+                admits = (
+                    f"its '{COGNITO_PRINCIPAL}:sub' condition is not a literal "
+                    "identity ID under StringEquals, so it is not credited as "
+                    "pinning who can assume"
+                )
+            else:
+                admits = "any identity pool, in any AWS account, can mint a token"
         else:
             risk = RiskLevel.HIGH
             admits = "any token from this IdP can assume"
             pins = "the expected subject"
         reasons = [
             f"Web-identity trust without a '{key}' condition that scopes it "
-            f"({admits}; negated operators and Null: false don't scope)",
+            f"({admits}; negated operators, Null: false and StringLike '*' "
+            "don't scope)",
             f"Remediation: Add a StringEquals condition on {key} pinning {pins}",
         ]
         return risk, reasons, _subject_fields(provider, risk.value, True)
@@ -412,13 +424,39 @@ def _assess_saml(
     )
 
 
+def _scoping_blocks(raw_conditions: dict[str, Any], key: str) -> list[tuple[str, Any]]:
+    """``(operator, value)`` for every condition on ``key`` (matched
+    case-insensitively) that isn't unscoping."""
+    return [
+        (operator, value)
+        for operator, block in raw_conditions.items()
+        if isinstance(block, dict)
+        for k, value in block.items()
+        if k.lower() == key and not _is_unscoping(operator, value)
+    ]
+
+
 def _is_unscoping(operator: str, value: Any) -> bool:
     """Whether a condition block admits every token carrying the claim: a
-    negated operator, or ``Null: false`` (ADR-0001)."""
+    negated operator, ``Null: false``, or a ``StringLike`` value of exactly
+    ``*`` (values are ORed, so one is enough) (ADR-0001)."""
     base = _operator_base(operator)
     if base == "null":
         return _null_sub_verdict(value) is SubVerdict.UNSCOPED
+    if base in _GLOB_OPERATORS:
+        return "*" in _sub_values(value)
     return base in _NON_SCOPING_OPERATORS
+
+
+def _is_literal_identity(operator: str, value: Any) -> bool:
+    """A ``StringEquals``/``StringEqualsIgnoreCase`` block whose values are all
+    strings with no ``*`` or ``?``."""
+    values = _sub_values(value)
+    return (
+        _operator_base(operator) in _LITERAL_OPERATORS
+        and bool(values)
+        and all(isinstance(v, str) and not set(v) & {"*", "?"} for v in values)
+    )
 
 
 def _subject_fields(
