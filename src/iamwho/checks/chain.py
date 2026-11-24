@@ -11,11 +11,18 @@ The walk is breadth-first: every reachable role is placed in the output
 tree at the shortest depth from the start, even if a longer path to it
 happens to be discovered before a shorter one. Shortest distance is a BFS
 invariant - it does not depend on which edge is considered first.
+
+Every walked role's trust policy is also run through the ingress evaluator,
+so a role that admits an external OIDC subject is marked as a web-identity
+entry, and each resolved path reports the worst entry on it beside the
+egress severity of its last role. The two are reported side by side, never
+combined into one score.
 """
 
 from typing import Any
 
-from iamwho.checks import egress
+from iamwho.checks import _client, egress, ingress
+from iamwho.models import RiskLevel, serialize
 
 
 def _hop_targets(role_arn: str) -> tuple[Any, list[str], list[str]]:
@@ -33,6 +40,32 @@ def _hop_targets(role_arn: str) -> tuple[Any, list[str], list[str]]:
         unresolved_targets.update(egress._unresolved_hop_targets(finding))
 
     return egress_result, sorted(targets), sorted(unresolved_targets)
+
+
+def _web_identity_entry(role_arn: str) -> dict[str, Any] | None:
+    """The ingress evaluator's verdict on a role as a web-identity entry.
+
+    None when no trust statement admits external OIDC subjects (see
+    ingress.web_identity_entry_findings). Otherwise the worst
+    statement's severity, those statements' findings serialized exactly as
+    ``--check ingress --json`` emits them, and the trust policy's Deny
+    statements, listed and never credited. A failed trust-policy read is an
+    error object, never None, so it can't be mistaken for "not an entry".
+    """
+    result = ingress.analyze_ingress(role_arn)
+    if result.error:
+        return {"status": "error", "message": result.error, "error": result.error}
+
+    # Served from the client cache: analyze_ingress just read it.
+    findings = ingress.web_identity_entry_findings(_client.get_trust_policy(role_arn))
+    if not findings:
+        return None
+
+    return {
+        "severity": max(f.risk for f in findings).value,
+        "findings": serialize(findings),
+        "deny_statements": result.deny_statements,
+    }
 
 
 def _shortest_depths(
@@ -92,16 +125,27 @@ def _build_node(
     ]
 
     egress_is_dict = isinstance(egress_result, dict)
+    status = egress_result.get("status") if egress_is_dict else "error"
+    # Mirrors egress's error contract (AGENTS.md): populate both message
+    # and error on failure, so callers keying off either field see it.
+    message = egress_result.get("message") if egress_is_dict else None
+    error = egress_result.get("error") if egress_is_dict else None
+
+    entry = _web_identity_entry(role_arn)
+    if _entry_failed(entry) and status != "error":
+        # Egress read fine but the trust policy didn't: the node is still an
+        # error. When both fail, the egress failure stays the node's message
+        # and the trust failure is carried by web_identity_entry.
+        status, message, error = "error", entry["message"], entry["error"]
 
     return {
         "role_arn": role_arn,
         "depth": depth,
-        "status": egress_result.get("status") if egress_is_dict else "error",
-        # Mirrors egress's error contract (AGENTS.md): populate both message
-        # and error on failure, so callers keying off either field see it.
-        "message": egress_result.get("message") if egress_is_dict else None,
-        "error": egress_result.get("error") if egress_is_dict else None,
+        "status": status,
+        "message": message,
+        "error": error,
         "egress": egress_result,
+        "web_identity_entry": entry,
         "hops": hops,
         "truncated": bool(unexplored),
         "max_depth": max_depth,
@@ -127,6 +171,75 @@ def _collect_paths(node: dict[str, Any]) -> list[list[str]]:
         for hop in node["hops"]
         for sub_path in _collect_paths(hop)
     ]
+
+
+_RISK_VALUES = {level.value for level in RiskLevel}
+
+
+def _entry_failed(entry: dict[str, Any] | None) -> bool:
+    return entry is not None and entry.get("status") == "error"
+
+
+def _egress_failed(node: dict[str, Any]) -> bool:
+    egress_result = node["egress"]
+    return not isinstance(egress_result, dict) or egress_result.get("status") == "error"
+
+
+def _highest_egress_severity(node: dict[str, Any]) -> str | None:
+    """The highest risk among a node's egress findings, or None when it has
+    none (including when its egress read failed)."""
+    egress_result = node["egress"]
+    findings = (
+        egress_result.get("findings", []) if isinstance(egress_result, dict) else []
+    )
+    risks = [RiskLevel(f["risk"]) for f in findings if f.get("risk") in _RISK_VALUES]
+    return max(risks).value if risks else None
+
+
+def _path_severities(root: dict[str, Any]) -> list[dict[str, Any]]:
+    """One entry per resolved path, index-aligned with ``paths``.
+
+    ``entry_severity`` is the worst web-identity entry on the path and
+    ``entry_role_arn`` names it (on a tie, the one nearest the start).
+    If any node on the path failed its trust-policy read, the worst entry
+    can't be known: ``entry_unknown`` is true and both fields are None.
+    ``last_role_severity`` is the highest egress severity of the path's last
+    role; ``last_role_unknown`` is true when that role's policies couldn't
+    be read, so a null severity isn't mistaken for "no findings". Every
+    entry on a path reaches that same last role.
+    """
+    nodes = {node["role_arn"]: node for node in _flatten(root)}
+    summaries = []
+    for path in _collect_paths(root):
+        path_nodes = [nodes[arn] for arn in path]
+        entries = [
+            (node["role_arn"], RiskLevel(node["web_identity_entry"]["severity"]))
+            for node in path_nodes
+            if node["web_identity_entry"] is not None
+            and not _entry_failed(node["web_identity_entry"])
+        ]
+        unknown = any(_entry_failed(node["web_identity_entry"]) for node in path_nodes)
+        worst = None
+        if entries and not unknown:
+            worst = max(entries, key=lambda e: e[1])  # max keeps the first on a tie
+        summaries.append(
+            {
+                "roles": list(path),
+                "entry_severity": worst[1].value if worst else None,
+                "entry_role_arn": worst[0] if worst else None,
+                "entry_unknown": unknown,
+                "last_role_arn": path[-1],
+                "last_role_severity": _highest_egress_severity(path_nodes[-1]),
+                "last_role_unknown": _egress_failed(path_nodes[-1]),
+            }
+        )
+    return summaries
+
+
+def _flatten(node: dict[str, Any]):
+    yield node
+    for hop in node["hops"]:
+        yield from _flatten(hop)
 
 
 def walk(
@@ -157,7 +270,11 @@ def walk(
     The returned dict also carries a top-level ``paths`` field: a flat
     list of role-ARN lists, one per distinct path from ``role_arn`` to
     each terminal node in the tree above - a derived summary alongside
-    the tree, not a restructuring of it.
+    the tree, not a restructuring of it - and ``path_severities``, index-
+    aligned with ``paths``: per path, the worst web-identity entry on it
+    and the highest egress severity of its last role, side by side.
+
+    Every node carries ``web_identity_entry`` (see _web_identity_entry).
     """
     if visited is None:
         visited = set()
@@ -165,6 +282,7 @@ def walk(
     depths = _shortest_depths(role_arn, depth, max_depth, visited)
     result = _build_node(role_arn, depth, max_depth, depths, set(visited))
     result["paths"] = _collect_paths(result)
+    result["path_severities"] = _path_severities(result)
     return result
 
 

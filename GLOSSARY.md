@@ -12,6 +12,7 @@ _Avoid_: OIDC trust chaining, role chaining
 
 **Web-identity entry**:
 A role whose trust policy admits an external OIDC subject; the first hop of a web-identity chain.
+A wildcard principal (`"*"`) allowed `sts:AssumeRoleWithWebIdentity` admits external OIDC subjects too, so it makes the role an entry.
 _Avoid_: entry point, OIDC role
 
 **Overbroad web-identity trust**:

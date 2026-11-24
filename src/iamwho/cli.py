@@ -377,8 +377,9 @@ def _first_chain_error(node: dict) -> Optional[str]:
     status is "error", root included.
 
     A chain walk's own top-level status only reflects the *starting* role's
-    egress fetch; a hop deeper in the tree can fail (e.g. AccessDenied on a
-    role reached via PassRole) while the root itself reads fine. Without this
+    reads (its policies, and its trust policy for web_identity_entry); a hop
+    deeper in the tree can fail (e.g. AccessDenied on a role reached via
+    PassRole) while the root itself reads fine. Without this
     search that failure stays buried in `hops[...]["status"]`, invisible to
     check_error and therefore to --fail-on.
     """
@@ -404,7 +405,8 @@ def check_error(result) -> Optional[str]:
     rendered as zero findings.
 
     A chain walk is a third shape: a tree of hops, any node of which - not
-    just the root - can carry the error, so detecting it means walking the
+    just the root - can carry the error (a failed policy read or a failed
+    trust-policy read), so detecting it means walking the
     tree via `_first_chain_error` rather than reading `status` off the top.
     """
     if result is None:
@@ -503,6 +505,10 @@ def normalize_chain_findings(result) -> list[dict]:
     calculated: a role one PassRole away from admin exited 0, which in a CI
     gate is indistinguishable from a clean run.
 
+    A node that is a web-identity entry also contributes one finding at the
+    entry's severity, so the exit code is the max of egress and entry
+    severities.
+
     Each finding is tagged with the role it came from and its depth, since
     findings pulled from several roles otherwise blend into one list with no
     way to tell whose permission is whose. A node that failed to read
@@ -512,10 +518,25 @@ def normalize_chain_findings(result) -> list[dict]:
     if not isinstance(result, dict):
         return []
 
-    findings = [
-        {**f, "role_arn": result.get("role_arn"), "depth": result.get("depth")}
-        for f in normalize_egress_findings(result.get("egress"))
-    ]
+    tag = {"role_arn": result.get("role_arn"), "depth": result.get("depth")}
+    findings = [{**f, **tag} for f in normalize_egress_findings(result.get("egress"))]
+
+    # A web-identity entry gates the exit code alongside egress, so a CRITICAL
+    # entry fails CI even when the roles it reaches look harmless. A failed
+    # trust read carries no severity; check_error surfaces it instead.
+    entry = result.get("web_identity_entry")
+    if isinstance(entry, dict) and entry.get("severity"):
+        findings.append(
+            {
+                "severity": entry["severity"],
+                "resource": result.get("role_arn"),
+                "action": "AssumeRoleWithWebIdentity",
+                "description": "web-identity entry",
+                "is_combo": False,
+                "source": "web_identity_entry",
+                **tag,
+            }
+        )
 
     for hop in result.get("hops", []):
         findings.extend(normalize_chain_findings(hop))

@@ -53,6 +53,7 @@ class FakeIamClient:
         self.attached_policies: dict[str, list[str]] = {}
         self.managed_policies: dict[str, dict[str, Any]] = {}
         self.errors: dict[str, str] = {}
+        self.role_errors: dict[tuple[str, str], str] = {}
         self.exceptions: dict[str, Exception] = {}
 
     # -- fixture construction ------------------------------------------------
@@ -81,6 +82,11 @@ class FakeIamClient:
         """Make ``operation`` raise a ClientError with ``code``."""
         self.errors[operation] = code
 
+    def fail_for_role(self, operation: str, role_name: str, code: str) -> None:
+        """Make ``operation`` raise a ClientError with ``code`` for one role
+        only, e.g. a resource-scoped AccessDenied on a single get_role."""
+        self.role_errors[(operation, role_name)] = code
+
     def raise_exception(self, operation: str, exc: Exception) -> None:
         """Make ``operation`` raise an arbitrary, non-ClientError exception.
 
@@ -94,12 +100,14 @@ class FakeIamClient:
 
     # -- boto3 surface -------------------------------------------------------
 
-    def _record(self, operation: str) -> None:
+    def _record(self, operation: str, role_name: str | None = None) -> None:
         self.calls.append(operation)
         exc = self.exceptions.get(operation)
         if exc:
             raise exc
-        code = self.errors.get(operation)
+        code = self.errors.get(operation) or self.role_errors.get(
+            (operation, role_name or "")
+        )
         if code:
             raise ClientError(
                 {"Error": {"Code": code, "Message": f"simulated {code}"}}, operation
@@ -114,8 +122,8 @@ class FakeIamClient:
         ]
 
     def _paginate(self, operation: str, **kwargs: Any):
-        self._record(operation)
         role_name = kwargs["RoleName"]
+        self._record(operation, role_name)
         if operation == "list_role_policies":
             names = sorted(self.inline_policies.get(role_name, {}))
             return iter(self._pages(names, "PolicyNames"))
@@ -131,7 +139,7 @@ class FakeIamClient:
         return _FakePaginator(self, operation)
 
     def get_role(self, RoleName: str) -> dict[str, Any]:
-        self._record("get_role")
+        self._record("get_role", RoleName)
         if RoleName not in self.trust_policies:
             raise ClientError(
                 {"Error": {"Code": "NoSuchEntity", "Message": "no such role"}},

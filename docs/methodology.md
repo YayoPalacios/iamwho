@@ -317,6 +317,63 @@ Rules:
 | Cognito | `aud` (the identity pool ID), plus `amr` (usually `ForAnyValue:StringLike` `authenticated`) to separate authenticated from unauthenticated identities. A literal identity ID in `sub` can stand in for `aud` | `aud` presence only (or a literal `StringEquals` `sub`); `amr` not evaluated |
 | SAML | `saml:aud` recommended | Presence of `saml:aud`, as an INFO note |
 
+#### Web-identity chains (`--check chain`)
+
+The chain walk (`iamwho analyze <role> --check chain --json`) runs every role
+it reaches through the same evaluator as ingress, so the two can't disagree on
+a verdict. It reads each walked role's trust policy once per run, and roles
+past the depth cap aren't read at all.
+
+Each node carries `web_identity_entry`:
+
+- `null` when no Allow statement admits external OIDC subjects. A statement
+  admits them when it trusts a federated OIDC principal (`github`,
+  `github_enterprise`, `eks`, `cognito`, `generic_oidc`), or a wildcard
+  principal (`"*"`, `{"AWS": "*"}`) with an action matching
+  `sts:AssumeRoleWithWebIdentity` (including globs such as `sts:*`). A
+  wildcard entry keeps ingress's verdict for that principal (CRITICAL, or HIGH
+  with `aws:PrincipalOrgID`/`aws:PrincipalArn`). SAML is not OIDC, so a
+  SAML-only trust is not a web-identity entry.
+- Otherwise `{"severity", "findings", "deny_statements"}`. `severity` is the
+  worst of those statements, at any verdict, including LOW and MEDIUM not
+  evaluated. `findings` holds those statements' findings exactly as
+  `--check ingress --json` emits them. `deny_statements` is listed and never
+  credited.
+- `{"status": "error", "message", "error"}` when the trust policy couldn't be
+  read. That is never reported as "not an entry". The node's own `status` is
+  `error` too, so the run lists it under `errors` and exits non-zero. When
+  the role's policies also failed to read, the node's `message` is the policy
+  failure and the trust failure stays in `web_identity_entry`.
+
+The top-level `path_severities` list is index-aligned with `paths` and always
+present. It has one entry per resolved path:
+
+| Field | Meaning |
+|:------|:--------|
+| `roles` | The path's role ARNs, the same as the matching `paths` entry |
+| `entry_severity` | The worst web-identity entry on the path, or `null` |
+| `entry_role_arn` | The node holding that entry. On a tie, the one nearest the start |
+| `entry_unknown` | `true` when a node on the path failed its trust-policy read. `entry_severity` and `entry_role_arn` are then `null`, because the worst entry can't be known |
+| `last_role_arn` | The path's last role |
+| `last_role_severity` | The highest egress severity of the last role, or `null` when it has no egress findings |
+| `last_role_unknown` | `true` when the last role's policies couldn't be read. `last_role_severity` is then `null` because the destination is unknown, not because it has no findings |
+
+**There is no combined score.** `entry_severity` answers "how broad is the way
+in" and `last_role_severity` answers "how bad is the destination". They are
+reported side by side, and iamwho doesn't invent a chain severity it can't
+justify. Every entry on a path reaches that path's last role.
+
+With `--check chain`, the exit code is the highest of every walked role's
+egress severities and web-identity entry severities. A CRITICAL or HIGH entry
+fails the default gate even when the roles it reaches look harmless. A MEDIUM
+entry fails only with `--fail-on medium` or stricter.
+
+The walk is forward-only: it finds entries at or after the starting role, not
+upstream of it. It also follows `sts:AssumeRole` grants from identity policy
+without yet checking that the target's trust admits the source (#25), so a path
+into a role that trusts only a federated principal is potential, not proven,
+reach.
+
 ---
 
 ## 5. Permissions – Egress Surface
