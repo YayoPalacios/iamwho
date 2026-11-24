@@ -11,7 +11,10 @@ it: anyone on GitHub (CRITICAL), anyone in one org (HIGH), any ref in one
 repository (MEDIUM), or a pinned ref or environment (LOW). #9 reports what
 that evaluation could not check (unevaluated ``sub`` blocks and values, other
 condition keys, ``Deny`` statements) without crediting it as narrowing, and
-adds INFO notes on ``aud``.
+adds INFO notes on ``aud``. #10 gives every other federated principal a
+verdict that is never reassuring: a missing identifying key (EKS/generic
+``sub``, Cognito ``aud``) is HIGH or CRITICAL, anything else is MEDIUM, not
+evaluated, and SAML stays LOW with ``subject_evaluated: false``.
 """
 
 import json
@@ -449,17 +452,37 @@ def test_subject_fields_leave_existing_fields_unchanged(iam):
     assert finding["conditions"]["raw_conditions"] == equals(PINNED)
 
 
-def test_non_github_findings_leave_subject_fields_unset(iam):
-    """Other providers get their subject fields in #10."""
-    _, findings = run_ingress(iam, web_identity_trust(EKS))
+def test_github_evaluation_details_stay_unset_for_other_oidc_providers(iam):
+    """Other providers' values are not evaluated at all, so there is no
+    evaluated/unevaluated split to report."""
+    trust = web_identity_trust(EKS, equals(SERVICE_ACCOUNT, key=EKS_SUB))
+
+    _, findings = run_ingress(iam, trust)
+
+    [finding] = findings
+    assert finding["unevaluated_sub_condition"] is None
+    assert finding["unevaluated_condition_keys"] is None
+    assert finding["audience_notes"] is None
+
+
+def test_non_web_identity_findings_leave_subject_fields_unset(iam):
+    trust = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {"AWS": f"arn:aws:iam::{ACCOUNT}:role/Other"},
+                "Action": "sts:AssumeRole",
+            }
+        ],
+    }
+
+    _, findings = run_ingress(iam, trust)
 
     [finding] = findings
     assert finding["provider"] is None
     assert finding["subject_verdict"] is None
     assert finding["subject_evaluated"] is None
-    assert finding["unevaluated_sub_condition"] is None
-    assert finding["unevaluated_condition_keys"] is None
-    assert finding["audience_notes"] is None
 
 
 def test_subject_evaluation_reads_only_the_trust_policy(iam):
@@ -572,41 +595,256 @@ def test_cognito_is_federated_oidc_not_a_service(iam):
     assert not any("confused deputy" in r.lower() for r in finding["reasons"])
 
 
-# =============================================================================
-# OTHER PROVIDERS: UNCHANGED UNTIL THEIR OWN TICKETS
-# =============================================================================
-
-EKS = (
-    f"arn:aws:iam::{ACCOUNT}:oidc-provider/"
-    "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B71EXAMPLE"
-)
-EKS_SUB = "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B71EXAMPLE:sub"
-GITHUB_ENTERPRISE = f"{GITHUB}/my-enterprise"
+COGNITO = "cognito-identity.amazonaws.com"
+COGNITO_AUD = "cognito-identity.amazonaws.com:aud"
+COGNITO_AMR = {
+    "ForAnyValue:StringLike": {"cognito-identity.amazonaws.com:amr": "authenticated"}
+}
 
 
 @pytest.mark.parametrize(
-    "federated,condition,expected_risk,expected_exit",
+    "condition",
     [
-        pytest.param(EKS, None, "HIGH", 1, id="eks-no-sub"),
-        pytest.param(
-            EKS,
-            {"StringEquals": {EKS_SUB: "system:serviceaccount:app:deployer"}},
-            "LOW",
-            0,
-            id="eks-with-sub",
-        ),
-        pytest.param(GITHUB_ENTERPRISE, None, "HIGH", 1, id="ghe-issuer-no-sub"),
+        pytest.param(None, id="no-conditions"),
+        # amr separates authenticated from unauthenticated identities, but
+        # does not identify the pool.
+        pytest.param(COGNITO_AMR, id="amr-only"),
     ],
 )
-def test_other_providers_keep_their_verdicts(
-    iam, federated, condition, expected_risk, expected_exit
-):
-    trust = web_identity_trust(federated, condition)
+def test_cognito_trust_without_aud_is_critical(iam, condition):
+    """Without ``aud``, any identity pool in any account can mint a token."""
+    exit_code, findings = run_ingress(iam, web_identity_trust(COGNITO, condition))
+
+    [finding] = findings
+    assert subject_fields(finding) == ("CRITICAL", "cognito", "CRITICAL", True)
+    assert exit_code == 2
+
+
+def test_cognito_trust_with_aud_is_medium_not_evaluated(iam):
+    trust = web_identity_trust(
+        COGNITO, {**equals("us-east-1:pool-id", key=COGNITO_AUD), **COGNITO_AMR}
+    )
 
     exit_code, findings = run_ingress(iam, trust)
 
-    assert [f["risk"] for f in findings] == [expected_risk]
-    assert exit_code == expected_exit
+    [finding] = findings
+    assert subject_fields(finding) == ("MEDIUM", "cognito", "NOT_EVALUATED", False)
+    assert exit_code == 0
+
+
+# =============================================================================
+# OTHER WEB-IDENTITY PROVIDERS: KEY PRESENCE ONLY (#10)
+# =============================================================================
+
+EKS_ISSUER = "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B71EXAMPLE"
+EKS = f"arn:aws:iam::{ACCOUNT}:oidc-provider/{EKS_ISSUER}"
+EKS_SUB = f"{EKS_ISSUER}:sub"
+SERVICE_ACCOUNT = "system:serviceaccount:app:deployer"
+
+
+def subject_fields(finding):
+    return (
+        finding["risk"],
+        finding["provider"],
+        finding["subject_verdict"],
+        finding["subject_evaluated"],
+    )
+
+
+def test_eks_trust_without_sub_is_high(iam):
+    exit_code, findings = run_ingress(iam, web_identity_trust(EKS))
+
+    [finding] = findings
+    assert subject_fields(finding) == ("HIGH", "eks", "HIGH", True)
+    assert exit_code == 1
+
+
+def test_eks_trust_with_sub_is_medium_not_evaluated(iam):
+    trust = web_identity_trust(EKS, equals(SERVICE_ACCOUNT, key=EKS_SUB))
+
+    exit_code, findings = run_ingress(iam, trust)
+
+    [finding] = findings
+    assert subject_fields(finding) == ("MEDIUM", "eks", "NOT_EVALUATED", False)
+    assert exit_code == 0
+
+
+GENERIC_ISSUER = "auth.example.com/realms/ci"
+GENERIC = f"arn:aws:iam::{ACCOUNT}:oidc-provider/{GENERIC_ISSUER}"
+GENERIC_SUB = f"{GENERIC_ISSUER}:sub"
+
+
+@pytest.mark.parametrize(
+    "condition,expected",
+    [
+        pytest.param(None, ("HIGH", "generic_oidc", "HIGH", True), id="no-sub"),
+        pytest.param(
+            like("ci-*", key=GENERIC_SUB),
+            ("MEDIUM", "generic_oidc", "NOT_EVALUATED", False),
+            id="with-sub",
+        ),
+        pytest.param(
+            equals("ci", key=GENERIC_SUB.upper()),
+            ("MEDIUM", "generic_oidc", "NOT_EVALUATED", False),
+            id="key-name-case-insensitive",
+        ),
+    ],
+)
+def test_generic_oidc_trust_follows_the_eks_rules(iam, condition, expected):
+    _, findings = run_ingress(iam, web_identity_trust(GENERIC, condition))
+
+    [finding] = findings
+    assert subject_fields(finding) == expected
+
+
+# (principal, identifying key, provider, severity when the key is absent)
+IDENTIFYING_KEYS = [
+    pytest.param(EKS, EKS_SUB, "eks", "HIGH", id="eks"),
+    pytest.param(GENERIC, GENERIC_SUB, "generic_oidc", "HIGH", id="generic"),
+    pytest.param(
+        "cognito-identity.amazonaws.com",
+        "cognito-identity.amazonaws.com:aud",
+        "cognito",
+        "CRITICAL",
+        id="cognito",
+    ),
+]
+
+UNSCOPING_ONLY = [
+    pytest.param(["StringNotEquals"], "x", id="string-not-equals"),
+    pytest.param(["StringNotLike"], "x*", id="string-not-like"),
+    pytest.param(["ForAnyValue:StringNotEqualsIfExists"], "x", id="qualified-negation"),
+    pytest.param(["Null"], "false", id="null-false"),
+    pytest.param(["Null"], ["true", "false"], id="null-list-with-false"),
+    pytest.param(["StringNotEquals", "Null"], "false", id="negation-and-null-false"),
+]
+
+
+@pytest.mark.parametrize("principal,key,provider,absent", IDENTIFYING_KEYS)
+@pytest.mark.parametrize("operators,value", UNSCOPING_ONLY)
+def test_identifying_key_only_negated_or_null_false_counts_as_absent(
+    iam, principal, key, provider, absent, operators, value
+):
+    """A negation admits everything it doesn't name, and ``Null: false`` only
+    asserts the claim exists. Neither scopes the trust, so it is as broad as
+    one with no key at all, and must fail the default gate like it."""
+    condition = {op: {key: value} for op in operators}
+
+    exit_code, findings = run_ingress(iam, web_identity_trust(principal, condition))
+
+    [finding] = findings
+    assert subject_fields(finding) == (absent, provider, absent, True)
+    assert exit_code == GATE_EXIT[absent]
+
+
+@pytest.mark.parametrize("principal,key,provider,_absent", IDENTIFYING_KEYS)
+@pytest.mark.parametrize(
+    "condition",
+    [
+        pytest.param(lambda k: {"Null": {k: "true"}}, id="null-true"),
+        pytest.param(
+            lambda k: {"StringNotEquals": {k: "x"}, "StringLike": {k: "y*"}},
+            id="negation-beside-positive",
+        ),
+        pytest.param(lambda k: {"ArnLike": {k: "y"}}, id="unrecognised-operator"),
+    ],
+)
+def test_identifying_key_otherwise_present_is_not_evaluated(
+    iam, principal, key, provider, _absent, condition
+):
+    trust = web_identity_trust(principal, condition(key))
+
+    exit_code, findings = run_ingress(iam, trust)
+
+    [finding] = findings
+    assert subject_fields(finding) == ("MEDIUM", provider, "NOT_EVALUATED", False)
+    assert exit_code == 0
+
+
+GHE_ISSUER = "token.actions.githubusercontent.com/my-enterprise"
+GITHUB_ENTERPRISE = f"arn:aws:iam::{ACCOUNT}:oidc-provider/{GHE_ISSUER}"
+GHE_SUB = f"{GHE_ISSUER}:sub"
+
+
+@pytest.mark.parametrize(
+    "condition,expected",
+    [
+        pytest.param(None, ("HIGH", "github_enterprise", "HIGH", True), id="no-sub"),
+        pytest.param(
+            equals(PINNED, key=GHE_SUB),
+            ("MEDIUM", "github_enterprise", "NOT_EVALUATED", False),
+            id="pinned-sub-not-rated-low",
+        ),
+        pytest.param(
+            like("repo:*", key=GHE_SUB),
+            ("MEDIUM", "github_enterprise", "NOT_EVALUATED", False),
+            id="broad-sub-not-rated-critical",
+        ),
+    ],
+)
+def test_github_enterprise_issuer_is_deliberately_a_generic_provider(
+    iam, condition, expected
+):
+    """Deliberate (ADR-0001, #10): an enterprise's custom issuer can use its
+    own subject claim template, so iamwho does not apply the public-GitHub
+    ``repo:`` rules to it. Only ``sub`` presence is checked, as for any
+    generic OIDC provider, and a ``sub`` is reported not evaluated even when
+    it looks pinned or broad."""
+    trust = web_identity_trust(GITHUB_ENTERPRISE, condition)
+
+    _, findings = run_ingress(iam, trust)
+
+    [finding] = findings
+    assert subject_fields(finding) == expected
+
+
+SAML = f"arn:aws:iam::{ACCOUNT}:saml-provider/Okta"
+SAML_SIGNIN = "https://signin.aws.amazon.com/saml"
+
+
+def saml_trust(condition=None):
+    trust = web_identity_trust(SAML, condition)
+    trust["Statement"][0]["Action"] = "sts:AssumeRoleWithSAML"
+    return trust
+
+
+@pytest.mark.parametrize(
+    "condition,codes",
+    [
+        pytest.param(None, ["saml_aud_missing"], id="no-conditions"),
+        pytest.param(
+            {"StringEquals": {"saml:sub": "alice"}},
+            ["saml_aud_missing"],
+            id="other-saml-key",
+        ),
+        pytest.param(
+            {"StringEquals": {"saml:aud": SAML_SIGNIN}}, [], id="aud-restricted"
+        ),
+        pytest.param(
+            {"StringEquals": {"SAML:AUD": SAML_SIGNIN}}, [], id="key-case-insensitive"
+        ),
+    ],
+)
+def test_saml_trust_is_low_and_reports_its_audience_restriction(iam, condition, codes):
+    """A restricted trust reports an empty note list, not null: the audience
+    was checked and there is nothing to say."""
+    exit_code, findings = run_ingress(iam, saml_trust(condition))
+
+    [finding] = findings
+    assert subject_fields(finding) == ("LOW", "saml", None, False)
+    assert audience_codes(finding) == codes
+    assert exit_code == 0
+
+
+def test_sub_key_of_another_issuer_does_not_count_as_present(iam):
+    """Only ``<this issuer>:sub`` identifies the subject; a GitHub ``sub``
+    on an EKS trust scopes nothing."""
+    trust = web_identity_trust(EKS, equals(PINNED))
+
+    _, findings = run_ingress(iam, trust)
+
+    [finding] = findings
+    assert subject_fields(finding) == ("HIGH", "eks", "HIGH", True)
 
 
 # =============================================================================

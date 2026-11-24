@@ -86,11 +86,6 @@ class ConditionAnalysis:
         """Check if conditions protect cross-account access."""
         return self.has_external_id or self.has_principal_org_id
 
-    @property
-    def has_oidc_claim_restriction(self) -> bool:
-        """Check if OIDC claims are properly restricted."""
-        return self.has_oidc_sub_claim or self.has_oidc_aud_claim
-
 
 @dataclass
 class TrustFinding:
@@ -103,17 +98,19 @@ class TrustFinding:
     risk: RiskLevel
     conditions: ConditionAnalysis
     reasons: list[str] = field(default_factory=list)
-    # Set for web-identity providers whose subject iamwho evaluates (GitHub).
-    # subject_verdict is a RiskLevel value or "NOT_EVALUATED".
+    # Set for federated principals. provider is a stable machine value:
+    # github, github_enterprise, eks, cognito, generic_oidc or saml.
+    # subject_verdict is a RiskLevel value, "NOT_EVALUATED", or None (SAML).
     provider: str | None = None
     subject_verdict: str | None = None
     subject_evaluated: bool | None = None
-    # The sub condition blocks iamwho could not evaluate, in Condition shape,
-    # or None when every block was evaluated.
+    # GitHub only: the sub condition blocks iamwho could not evaluate, in
+    # Condition shape, or None when every block was evaluated.
     unevaluated_sub_condition: dict[str, Any] | None = None
-    # Condition keys present but not evaluated (never credited as narrowing).
+    # GitHub only: condition keys present but not evaluated (never credited
+    # as narrowing).
     unevaluated_condition_keys: list[str] | None = None
-    # INFO notes on aud: [{"code", "severity", "message"}].
+    # GitHub and SAML: INFO notes on aud, [{"code", "severity", "message"}].
     audience_notes: list[dict[str, str]] | None = None
 
     def to_dict(self) -> dict[str, Any]:

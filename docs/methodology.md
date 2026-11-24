@@ -221,8 +221,30 @@ any other operator produces no note and is listed under
 The JSON finding for a GitHub trust carries `provider: "github"`,
 `subject_verdict` (the severity, or `NOT_EVALUATED`), `subject_evaluated`,
 `unevaluated_sub_condition`, `unevaluated_condition_keys` and
-`audience_notes`. These fields are `null` for other principals. The ingress
-result's `deny_statements` is filled for every role.
+`audience_notes`. The ingress result's `deny_statements` is filled for every
+role.
+
+`provider` is set for `oidc-provider/`, Cognito and `saml-provider/`
+principals, and its values are stable:
+
+| `provider` | Principal |
+|:-----------|:----------|
+| `github` | `oidc-provider/token.actions.githubusercontent.com` |
+| `github_enterprise` | `oidc-provider/token.actions.githubusercontent.com/<enterprise>` |
+| `eks` | `oidc-provider/oidc.eks.*` |
+| `cognito` | `cognito-identity.amazonaws.com` |
+| `generic_oidc` | Any other `oidc-provider/` |
+| `saml` | `saml-provider/` |
+
+For the other web-identity providers, `subject_verdict` is the severity with
+`subject_evaluated: true` when the identifying key is absent, and
+`NOT_EVALUATED` with `subject_evaluated: false` when it is present. SAML
+findings have `subject_verdict: null` and `subject_evaluated: false`.
+`unevaluated_sub_condition` and `unevaluated_condition_keys` are GitHub-only,
+and `audience_notes` is set for GitHub and SAML. All of these fields are `null`
+for other principals, including the public identity providers
+`accounts.google.com`, `graph.facebook.com` and `www.amazon.com`, which iamwho
+does not yet classify.
 
 With `-v`, a GitHub trust's conditions are shown as plainly present only when
 its subject verdict is LOW. Otherwise the line says that the conditions don't
@@ -230,17 +252,54 @@ scope `sub` (CRITICAL), what the `sub` pattern still admits (any repository in
 the org for HIGH, more than a pinned ref or environment for MEDIUM), or that
 it was not evaluated.
 
-This rule applies to GitHub only. Other OIDC providers (EKS, generic IdPs, and
-GitHub Enterprise custom issuers) are **HIGH** when they carry neither `sub` nor
-`aud`, and LOW otherwise. Cognito identity pools
-(`cognito-identity.amazonaws.com`) are classified as federated OIDC, not as an
-AWS service, so the confused-deputy rule does not apply to them.
+#### Other web-identity providers and SAML
 
-| Provider | Required Conditions |
-|:---------|:-------------------|
-| GitHub Actions | Constrained `sub` (`aud` recommended, but never counts as scoping) |
-| EKS | Cluster-scoped `sub` |
-| Cognito | `sub`, `aud` |
+iamwho evaluates `sub` values for the public GitHub issuer only. For every
+other web-identity provider it checks that the provider's **identifying key**
+is present, which is not value evaluation (ADR-0001). It never gives these
+trusts a reassuring severity:
+
+| Severity | When |
+|:---------|:-----|
+| **CRITICAL** | Cognito without `cognito-identity.amazonaws.com:aud`. Any identity pool, in any AWS account, can mint a token |
+| **HIGH** | EKS or generic OIDC without `<issuer>:sub`. Any token from that IdP can assume |
+| **MEDIUM**, not evaluated | The identifying key is present. Its values are not evaluated |
+| **LOW** | SAML. No assertion attributes are evaluated |
+
+Rules:
+
+- The identifying key must belong to the trusted issuer: `<issuer>:sub`, where
+  `<issuer>` is the path after `oidc-provider/` in the principal ARN. Key names
+  match case-insensitively. A `sub` key for a different issuer in the same
+  statement does not count.
+- A key that only appears under negated operators (`StringNotEquals`,
+  `StringNotLike`, and their qualified forms) or `Null: false` counts as
+  **absent**, the same as for GitHub: it admits every token carrying the claim.
+  So EKS or generic OIDC is HIGH, and Cognito is CRITICAL.
+- `Null: true`, an unrecognised operator, or a negation beside a positive
+  condition on the key: the key is present, so the trust is MEDIUM, not
+  evaluated.
+- **GitHub Enterprise custom issuers**
+  (`token.actions.githubusercontent.com/<enterprise>`) are deliberately treated
+  as a generic provider. An enterprise can use its own subject claim template,
+  so the public-GitHub `repo:` rules are not applied: `sub` presence is checked,
+  and a present `sub` is MEDIUM, not evaluated, however pinned or broad it looks.
+- Cognito identity pools (`cognito-identity.amazonaws.com`) are classified as
+  federated OIDC, not as an AWS service, so the confused-deputy rule does not
+  apply to them. `amr` is not evaluated.
+- SAML findings carry `subject_evaluated: false` and `subject_verdict: null`,
+  not `NOT_EVALUATED`, which always means MEDIUM. Their `audience_notes` hold
+  one INFO note, `saml_aud_missing`, when the statement has no `saml:aud`
+  condition, and are empty (`[]`) when it does. The note never changes the risk.
+
+| Provider | Identifying condition | Evaluated |
+|:---------|:----------------------|:----------|
+| GitHub Actions | Constrained `sub` (`aud` recommended, but never counts as scoping) | `sub` operator and values |
+| GitHub Enterprise custom issuer | `sub` | Presence only |
+| EKS | Cluster-scoped `sub` (`system:serviceaccount:<namespace>:<name>`) | Presence only |
+| Generic OIDC | `sub` | Presence only |
+| Cognito | `aud` (the identity pool ID), plus `amr` (usually `ForAnyValue:StringLike` `authenticated`) to separate authenticated from unauthenticated identities | `aud` presence only; `amr` not evaluated |
+| SAML | `saml:aud` recommended | Presence of `saml:aud`, as an INFO note |
 
 ---
 
