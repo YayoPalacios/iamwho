@@ -330,7 +330,9 @@ Each node carries `web_identity_entry`:
   admits them when it trusts a federated OIDC principal (`github`,
   `github_enterprise`, `eks`, `cognito`, `generic_oidc`), or a wildcard
   principal (`"*"`, `{"AWS": "*"}`) with an action matching
-  `sts:AssumeRoleWithWebIdentity` (including globs such as `sts:*`). A
+  `sts:AssumeRoleWithWebIdentity` (including globs such as `sts:*`), or with a
+  `NotAction` that doesn't exclude it (`NotAction: "sts:AssumeRole"` still
+  allows it). A
   wildcard entry keeps ingress's verdict for that principal (CRITICAL, or HIGH
   with `aws:PrincipalOrgID`/`aws:PrincipalArn`). SAML is not OIDC, so a
   SAML-only trust is not a web-identity entry.
