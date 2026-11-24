@@ -1,6 +1,6 @@
 """Data models for iamwho findings."""
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum
 from functools import total_ordering
 from typing import Any
@@ -158,3 +158,18 @@ class IngressResult:
             "error": self.error,
             "deny_statements": self.deny_statements,
         }
+
+
+def serialize(obj: Any) -> Any:
+    """Convert a dataclass result to plain JSON types: the shape ``--json``
+    emits for ingress, and that the chain walk reuses for web-identity
+    entries so the two never differ."""
+    if is_dataclass(obj) and not isinstance(obj, type):
+        return {k: serialize(v) for k, v in asdict(obj).items()}
+    if isinstance(obj, Enum):
+        return obj.value
+    if isinstance(obj, list):
+        return [serialize(i) for i in obj]
+    if isinstance(obj, dict):
+        return {k: serialize(v) for k, v in obj.items()}
+    return obj

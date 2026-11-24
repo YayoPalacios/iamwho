@@ -10,6 +10,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
+from iamwho.models import serialize
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # App Setup
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -910,21 +912,7 @@ def checks():
 # ═══════════════════════════════════════════════════════════════════════════════
 def _serialize_result(result) -> dict:
     """Convert dataclass result to JSON-serializable dict."""
-    from dataclasses import asdict, is_dataclass
-    from enum import Enum
-
-    def convert(obj):
-        if is_dataclass(obj):
-            return {k: convert(v) for k, v in asdict(obj).items()}
-        elif isinstance(obj, Enum):
-            return obj.value
-        elif isinstance(obj, list):
-            return [convert(i) for i in obj]
-        elif isinstance(obj, dict):
-            return {k: convert(v) for k, v in obj.items()}
-        return obj
-
-    return convert(result)
+    return serialize(result)
 
 
 if __name__ == "__main__":
