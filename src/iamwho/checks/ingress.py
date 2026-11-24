@@ -57,8 +57,9 @@ def web_identity_entry_findings(trust_policy: dict[str, Any]) -> list[TrustFindi
 
     An Allow statement admits external OIDC subjects when it trusts a
     federated OIDC principal (whatever its action), or a wildcard principal
-    (``"*"``, ``{"AWS": "*"}``) with an action that matches
-    ``sts:AssumeRoleWithWebIdentity``. SAML is not OIDC and never counts.
+    (``"*"``, ``{"AWS": "*"}``) whose ``Action`` matches
+    ``sts:AssumeRoleWithWebIdentity``, or whose ``NotAction`` doesn't
+    exclude it. SAML is not OIDC and never counts.
     """
     findings: list[TrustFinding] = []
     for statement in _statements(trust_policy):
@@ -79,12 +80,19 @@ def _statements(trust_policy: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _allows_web_identity(statement: dict[str, Any]) -> bool:
-    """Whether any of the statement's actions matches
-    sts:AssumeRoleWithWebIdentity (IAM action names are case-insensitive)."""
+    """Whether the statement allows sts:AssumeRoleWithWebIdentity: one of
+    its ``Action`` patterns matches it, or, for ``NotAction``, none of the
+    excluded patterns does. IAM action names are case-insensitive."""
+    if "NotAction" in statement:
+        return not _matches_web_identity_action(statement["NotAction"])
+    return _matches_web_identity_action(statement.get("Action", []))
+
+
+def _matches_web_identity_action(patterns: Any) -> bool:
     return any(
-        isinstance(action, str)
-        and _glob_matches(action.lower(), "sts:assumerolewithwebidentity")
-        for action in _normalize_to_list(statement.get("Action", []))
+        isinstance(pattern, str)
+        and _glob_matches(pattern.lower(), "sts:assumerolewithwebidentity")
+        for pattern in _normalize_to_list(patterns)
     )
 
 

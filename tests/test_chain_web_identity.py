@@ -569,3 +569,40 @@ def test_wildcard_principal_without_web_identity_action_is_not_an_entry(iam):
     _, chain = run_chain(arn)
 
     assert chain["web_identity_entry"] is None
+
+
+def test_wildcard_principal_with_notaction_not_excluding_web_identity_is_an_entry(
+    iam,
+):
+    """NotAction excluding only sts:AssumeRole still allows
+    sts:AssumeRoleWithWebIdentity."""
+    statement = {"Effect": "Allow", "Principal": "*", "NotAction": "sts:AssumeRole"}
+    arn = iam.add_role("Open", trust_policy=trust(statement), inline=policy())
+
+    exit_code, chain = run_chain(arn)
+
+    entry = chain["web_identity_entry"]
+    assert entry["severity"] == "CRITICAL"
+    [finding] = entry["findings"]
+    assert finding["principal"] == "*"
+    assert exit_code == 2
+
+
+@pytest.mark.parametrize(
+    "not_action",
+    [
+        pytest.param("sts:AssumeRoleWithWebIdentity", id="exact"),
+        pytest.param("STS:assumerolewithwebidentity", id="case-insensitive"),
+        pytest.param("sts:AssumeRoleWith*", id="glob"),
+        pytest.param(["sts:AssumeRole", "sts:*"], id="list-with-service-glob"),
+    ],
+)
+def test_wildcard_principal_with_notaction_excluding_web_identity_is_not_an_entry(
+    iam, not_action
+):
+    statement = {"Effect": "Allow", "Principal": "*", "NotAction": not_action}
+    arn = iam.add_role("Open", trust_policy=trust(statement), inline=policy())
+
+    _, chain = run_chain(arn)
+
+    assert chain["web_identity_entry"] is None
