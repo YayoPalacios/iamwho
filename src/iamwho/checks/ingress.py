@@ -69,12 +69,13 @@ def _analyze_statement(statement: dict[str, Any]) -> list[TrustFinding]:
 
     statement_id = statement.get("Sid")
     actions = _normalize_to_list(statement.get("Action", []))
-    conditions = _analyze_conditions(statement.get("Condition", {}))
+    raw_conditions = statement.get("Condition", {})
     assume_type = _classify_assume_type(actions)
     principals = _extract_principals(statement)
 
     for principal in principals:
         principal_type = _classify_principal(principal)
+        conditions = _analyze_conditions(raw_conditions, principal, principal_type)
         subject: dict[str, Any] = {}
         provider = _web_identity_provider(principal, principal_type)
         if provider == "github":
@@ -186,9 +187,24 @@ def _classify_principal(principal: str) -> PrincipalType:
     return PrincipalType.UNKNOWN
 
 
-def _analyze_conditions(raw_conditions: dict[str, Any]) -> ConditionAnalysis:
-    """Analyze conditions for security-relevant keys."""
+def _analyze_conditions(
+    raw_conditions: dict[str, Any], principal: str, principal_type: PrincipalType
+) -> ConditionAnalysis:
+    """Analyze conditions for security-relevant keys, as seen by one principal.
+
+    The OIDC claim flags count only conditions on the principal's own issuer
+    (``<issuer>:sub``, ``<issuer>:aud``) that scope something: a negated,
+    ``Null: false`` or ``StringLike "*"`` block is not a protection.
+    """
     analysis = ConditionAnalysis(raw_conditions=raw_conditions)
+    if principal_type == PrincipalType.FEDERATED_OIDC:
+        issuer = _oidc_issuer(principal)
+        analysis.has_oidc_sub_claim = bool(
+            _scoping_blocks(raw_conditions, f"{issuer}:sub")
+        )
+        analysis.has_oidc_aud_claim = bool(
+            _scoping_blocks(raw_conditions, f"{issuer}:aud")
+        )
 
     all_keys: set[str] = set()
     for operator_block in raw_conditions.values():
@@ -209,12 +225,7 @@ def _analyze_conditions(raw_conditions: dict[str, Any]) -> ConditionAnalysis:
         elif key_lower == "aws:principalarn":
             analysis.has_principal_arn = True
         elif key_lower == "saml:aud":
-            # Before the generic ":aud" match, which would shadow it.
             analysis.has_saml_aud = True
-        elif ":sub" in key_lower:
-            analysis.has_oidc_sub_claim = True
-        elif ":aud" in key_lower:
-            analysis.has_oidc_aud_claim = True
 
     return analysis
 

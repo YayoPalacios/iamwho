@@ -250,7 +250,15 @@ With `-v`, a GitHub trust's conditions are shown as plainly present only when
 its subject verdict is LOW. Otherwise the line says that the conditions don't
 scope `sub` (CRITICAL), what the `sub` pattern still admits (any repository in
 the org for HIGH, more than a pinned ref or environment for MEDIUM), or that
-it was not evaluated.
+it was not evaluated. For the other web-identity providers, the line says the
+conditions don't scope `sub` (Cognito: `aud`) when the trust is HIGH or
+CRITICAL, and that they were not evaluated when it is MEDIUM.
+
+The JSON `conditions.has_oidc_sub_claim` and `has_oidc_aud_claim` flags count
+only a condition on the principal's own issuer (`<issuer>:sub`,
+`<issuer>:aud`) that scopes something. A key for a different issuer, or one
+that only appears negated, as `Null: false` or as a bare `StringLike "*"`, is
+not a protection.
 
 #### Other web-identity providers and SAML
 

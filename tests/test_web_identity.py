@@ -1256,3 +1256,132 @@ def test_github_aud_under_other_operators_is_listed_not_noted(iam, aud):
     assert audience_codes(finding) == []
     assert finding["unevaluated_condition_keys"] == [GITHUB_AUD]
     assert finding["risk"] == "LOW"
+
+
+# =============================================================================
+# WHAT -v AND THE CONDITION FLAGS CLAIM FOR OTHER PROVIDERS (#10)
+# =============================================================================
+
+
+def federated_trust(federated, condition):
+    if federated == SAML:
+        return saml_trust(condition)
+    return web_identity_trust(federated, condition)
+
+
+@pytest.mark.parametrize(
+    "federated,condition,expected",
+    [
+        pytest.param(
+            EKS,
+            {"StringEquals": {f"{EKS_ISSUER}:aud": "sts.amazonaws.com"}},
+            "Conditions: present, but they do not scope 'sub'",
+            id="eks-high",
+        ),
+        pytest.param(
+            GITHUB_ENTERPRISE,
+            like("*", key=GHE_SUB),
+            "Conditions: present, but they do not scope 'sub'",
+            id="ghe-star-sub-high",
+        ),
+        pytest.param(
+            COGNITO,
+            COGNITO_AMR,
+            "Conditions: present, but they do not scope 'aud'",
+            id="cognito-critical",
+        ),
+        pytest.param(
+            EKS,
+            equals(SERVICE_ACCOUNT, key=EKS_SUB),
+            "Conditions: present, but not evaluated",
+            id="eks-not-evaluated",
+        ),
+        pytest.param(
+            COGNITO,
+            equals("us-east-1:pool-id", key=COGNITO_AUD),
+            "Conditions: present, but not evaluated",
+            id="cognito-not-evaluated",
+        ),
+        pytest.param(
+            SAML,
+            {"StringEquals": {"saml:aud": SAML_SIGNIN}},
+            "Conditions: present",
+            id="saml-unchanged",
+        ),
+    ],
+)
+def test_verbose_never_shows_unscoped_or_unevaluated_conditions_as_reassuring(
+    iam, federated, condition, expected
+):
+    trust = federated_trust(federated, condition)
+
+    line = verbose_conditions_line(iam, trust)
+
+    assert line == expected
+
+
+def protection_flags(finding):
+    conditions = finding["conditions"]
+    return conditions["has_oidc_sub_claim"], conditions["has_oidc_aud_claim"]
+
+
+@pytest.mark.parametrize(
+    "federated,condition,expected",
+    [
+        pytest.param(
+            EKS,
+            equals(SERVICE_ACCOUNT, key=EKS_SUB),
+            (True, False),
+            id="own-sub",
+        ),
+        pytest.param(
+            EKS,
+            {"StringEquals": {f"{EKS_ISSUER}:aud": "sts.amazonaws.com"}},
+            (False, True),
+            id="own-aud",
+        ),
+        pytest.param(
+            EKS,
+            {"StringEquals": {GITHUB_SUB: PINNED, GITHUB_AUD: "x"}},
+            (False, False),
+            id="another-issuers-keys",
+        ),
+        pytest.param(
+            EKS,
+            {"StringNotEquals": {EKS_SUB: "x", f"{EKS_ISSUER}:aud": "y"}},
+            (False, False),
+            id="negated",
+        ),
+        pytest.param(
+            EKS, {"Null": {EKS_SUB: "false"}}, (False, False), id="null-false"
+        ),
+        pytest.param(
+            EKS,
+            like("*", key=EKS_SUB),
+            (False, False),
+            id="bare-string-like-star",
+        ),
+        pytest.param(
+            GITHUB,
+            {**like("*"), **AUD_ONLY},
+            (False, True),
+            id="github-bare-star-sub",
+        ),
+        pytest.param(GITHUB, like("repo:my-org/*"), (True, False), id="github-sub"),
+        pytest.param(
+            SAML,
+            {"StringEquals": {"saml:aud": SAML_SIGNIN, "saml:sub": "a"}},
+            (False, False),
+            id="saml-keys-are-not-oidc",
+        ),
+    ],
+)
+def test_oidc_claim_protections_count_only_scoping_keys_of_the_principals_issuer(
+    iam, federated, condition, expected
+):
+    trust = federated_trust(federated, condition)
+
+    _, findings = run_ingress(iam, trust)
+
+    [finding] = findings
+    assert protection_flags(finding) == expected
