@@ -35,11 +35,7 @@ def analyze_ingress(role_arn: str) -> IngressResult:
         result.error = e.message
         return result
 
-    statements = trust_policy.get("Statement", [])
-    if not isinstance(statements, list):
-        statements = [statements]
-
-    for statement in statements:
+    for statement in _statements(trust_policy):
         if statement.get("Effect") == "Deny":
             # Deny is not evaluated: listed, never credited as narrowing.
             result.deny_statements.append(statement)
@@ -53,6 +49,43 @@ def analyze_ingress(role_arn: str) -> IngressResult:
         result.highest_risk = max(f.risk for f in result.findings)
 
     return result
+
+
+def web_identity_entry_findings(trust_policy: dict[str, Any]) -> list[TrustFinding]:
+    """The findings that make a role a web-identity entry, with ingress's
+    own verdict on each.
+
+    An Allow statement admits external OIDC subjects when it trusts a
+    federated OIDC principal (whatever its action), or a wildcard principal
+    (``"*"``, ``{"AWS": "*"}``) with an action that matches
+    ``sts:AssumeRoleWithWebIdentity``. SAML is not OIDC and never counts.
+    """
+    findings: list[TrustFinding] = []
+    for statement in _statements(trust_policy):
+        if statement.get("Effect") != "Allow":
+            continue
+        web_identity_action = _allows_web_identity(statement)
+        for finding in _analyze_statement(statement):
+            if finding.principal_type == PrincipalType.FEDERATED_OIDC or (
+                finding.principal_type == PrincipalType.WILDCARD and web_identity_action
+            ):
+                findings.append(finding)
+    return findings
+
+
+def _statements(trust_policy: dict[str, Any]) -> list[dict[str, Any]]:
+    statements = trust_policy.get("Statement", [])
+    return statements if isinstance(statements, list) else [statements]
+
+
+def _allows_web_identity(statement: dict[str, Any]) -> bool:
+    """Whether any of the statement's actions matches
+    sts:AssumeRoleWithWebIdentity (IAM action names are case-insensitive)."""
+    return any(
+        isinstance(action, str)
+        and _glob_matches(action.lower(), "sts:assumerolewithwebidentity")
+        for action in _normalize_to_list(statement.get("Action", []))
+    )
 
 
 # =============================================================================

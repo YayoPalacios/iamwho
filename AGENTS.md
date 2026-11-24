@@ -130,6 +130,13 @@ role-ARN lists, one per resolved path from the starting role to a terminal
 node, respecting the same shortest-depth resolution — a role reachable by a
 second, longer path only ever appears in the path of its shorter one.
 
+`path_severities` is index-aligned with `paths` and always emitted: one
+self-contained entry per path (`roles`, `entry_severity`, `entry_role_arn`,
+`entry_unknown`, `last_role_arn`, `last_role_severity`, `last_role_unknown`).
+Every node also carries `web_identity_entry` (null when the role isn't one).
+Entry and egress severity are reported side by side; never add a combined
+score. Field semantics live in `docs/methodology.md`.
+
 ## Commits and PRs
 
 - Imperative mood, lowercase, no trailing period: `add passrole target
