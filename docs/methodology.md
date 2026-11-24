@@ -261,7 +261,7 @@ trusts a reassuring severity:
 
 | Severity | When |
 |:---------|:-----|
-| **CRITICAL** | Cognito without `cognito-identity.amazonaws.com:aud`. Any identity pool, in any AWS account, can mint a token |
+| **CRITICAL** | Cognito without `cognito-identity.amazonaws.com:aud` or a literal identity ID in `sub`. Any identity pool, in any AWS account, can mint a token |
 | **HIGH** | EKS or generic OIDC without `<issuer>:sub`. Any token from that IdP can assume |
 | **MEDIUM**, not evaluated | The identifying key is present. Its values are not evaluated |
 | **LOW** | SAML. No assertion attributes are evaluated |
@@ -273,12 +273,20 @@ Rules:
   match case-insensitively. A `sub` key for a different issuer in the same
   statement does not count.
 - A key that only appears under negated operators (`StringNotEquals`,
-  `StringNotLike`, and their qualified forms) or `Null: false` counts as
+  `StringNotLike`, and their qualified forms) or `Null: false`, or only with a
+  `StringLike` value of exactly `*` (one in a list is enough), counts as
   **absent**, the same as for GitHub: it admits every token carrying the claim.
   So EKS or generic OIDC is HIGH, and Cognito is CRITICAL.
-- `Null: true`, an unrecognised operator, or a negation beside a positive
-  condition on the key: the key is present, so the trust is MEDIUM, not
-  evaluated.
+- `Null: true`, an unrecognised operator, any other `StringLike` value, a
+  literal `StringEquals "*"`, or a negation or `StringLike "*"` beside a
+  positive condition on the key: the key is present, so the trust is MEDIUM,
+  not evaluated.
+- For Cognito, a `cognito-identity.amazonaws.com:sub` condition can stand in
+  for `aud`, but only under `StringEquals` or `StringEqualsIgnoreCase` with
+  literal identity IDs (no `*` or `?`). Cognito generates identity IDs, so an
+  attacker can't pick one that matches. Such a trust is MEDIUM, not evaluated.
+  A `StringLike`, wildcarded, negated or `Null: false` `sub` doesn't stand in,
+  so without `aud` the trust is still CRITICAL.
 - **GitHub Enterprise custom issuers**
   (`token.actions.githubusercontent.com/<enterprise>`) are deliberately treated
   as a generic provider. An enterprise can use its own subject claim template,
@@ -298,7 +306,7 @@ Rules:
 | GitHub Enterprise custom issuer | `sub` | Presence only |
 | EKS | Cluster-scoped `sub` (`system:serviceaccount:<namespace>:<name>`) | Presence only |
 | Generic OIDC | `sub` | Presence only |
-| Cognito | `aud` (the identity pool ID), plus `amr` (usually `ForAnyValue:StringLike` `authenticated`) to separate authenticated from unauthenticated identities | `aud` presence only; `amr` not evaluated |
+| Cognito | `aud` (the identity pool ID), plus `amr` (usually `ForAnyValue:StringLike` `authenticated`) to separate authenticated from unauthenticated identities. A literal identity ID in `sub` can stand in for `aud` | `aud` presence only (or a literal `StringEquals` `sub`); `amr` not evaluated |
 | SAML | `saml:aud` recommended | Presence of `saml:aud`, as an INFO note |
 
 ---

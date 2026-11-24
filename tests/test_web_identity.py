@@ -620,6 +620,84 @@ def test_cognito_trust_without_aud_is_critical(iam, condition):
     assert exit_code == 2
 
 
+COGNITO_SUB = "cognito-identity.amazonaws.com:sub"
+IDENTITY_ID = "us-east-1:0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        pytest.param(equals(IDENTITY_ID, key=COGNITO_SUB), id="string-equals"),
+        pytest.param(
+            {"StringEqualsIgnoreCase": {COGNITO_SUB: IDENTITY_ID.upper()}},
+            id="string-equals-ignore-case",
+        ),
+        pytest.param(
+            equals([IDENTITY_ID, "us-east-1:other-id"], key=COGNITO_SUB),
+            id="list-of-literals",
+        ),
+    ],
+)
+def test_cognito_trust_pinning_a_literal_identity_without_aud_is_not_evaluated(
+    iam, condition
+):
+    """Cognito generates identity IDs, so an attacker can't pick one that
+    matches a literal ``sub``: that pins the trust even without ``aud``."""
+    exit_code, findings = run_ingress(iam, web_identity_trust(COGNITO, condition))
+
+    [finding] = findings
+    assert subject_fields(finding) == ("MEDIUM", "cognito", "NOT_EVALUATED", False)
+    assert exit_code == 0
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        pytest.param(like("us-east-1:*", key=COGNITO_SUB), id="string-like-wildcard"),
+        pytest.param(like(IDENTITY_ID, key=COGNITO_SUB), id="string-like-literal"),
+        pytest.param(equals("us-east-1:*", key=COGNITO_SUB), id="equals-with-wildcard"),
+        pytest.param(
+            equals([IDENTITY_ID, "us-east-1:?"], key=COGNITO_SUB),
+            id="list-with-a-wildcard",
+        ),
+        pytest.param(equals([], key=COGNITO_SUB), id="no-values"),
+        pytest.param({"StringNotEquals": {COGNITO_SUB: IDENTITY_ID}}, id="negated"),
+        pytest.param({"Null": {COGNITO_SUB: "false"}}, id="null-false"),
+    ],
+)
+def test_cognito_sub_that_is_not_a_literal_identity_does_not_replace_aud(
+    iam, condition
+):
+    exit_code, findings = run_ingress(iam, web_identity_trust(COGNITO, condition))
+
+    [finding] = findings
+    assert subject_fields(finding) == ("CRITICAL", "cognito", "CRITICAL", True)
+    assert exit_code == 2
+
+
+ANY_POOL = "any identity pool, in any AWS account, can mint a token"
+
+
+@pytest.mark.parametrize(
+    "condition,says_any_pool",
+    [
+        pytest.param(None, True, id="no-conditions"),
+        pytest.param(COGNITO_AMR, True, id="amr-only"),
+        pytest.param({"Null": {COGNITO_SUB: "false"}}, True, id="null-false-sub"),
+        pytest.param(
+            like("us-east-1:*", key=COGNITO_SUB), False, id="sub-not-a-literal-id"
+        ),
+    ],
+)
+def test_cognito_critical_reason_says_any_pool_only_when_nothing_scopes_it(
+    iam, condition, says_any_pool
+):
+    _, findings = run_ingress(iam, web_identity_trust(COGNITO, condition))
+
+    [finding] = findings
+    assert any(ANY_POOL in r for r in finding["reasons"]) is says_any_pool
+
+
 def test_cognito_trust_with_aud_is_medium_not_evaluated(iam):
     trust = web_identity_trust(
         COGNITO, {**equals("us-east-1:pool-id", key=COGNITO_AUD), **COGNITO_AMR}
@@ -717,17 +795,21 @@ UNSCOPING_ONLY = [
     pytest.param(["Null"], "false", id="null-false"),
     pytest.param(["Null"], ["true", "false"], id="null-list-with-false"),
     pytest.param(["StringNotEquals", "Null"], "false", id="negation-and-null-false"),
+    pytest.param(["StringLike"], "*", id="string-like-star"),
+    pytest.param(["StringLikeIfExists"], "*", id="qualified-string-like-star"),
+    pytest.param(["StringLike"], ["x", "*"], id="string-like-list-with-star"),
 ]
 
 
 @pytest.mark.parametrize("principal,key,provider,absent", IDENTIFYING_KEYS)
 @pytest.mark.parametrize("operators,value", UNSCOPING_ONLY)
-def test_identifying_key_only_negated_or_null_false_counts_as_absent(
+def test_identifying_key_that_scopes_nothing_counts_as_absent(
     iam, principal, key, provider, absent, operators, value
 ):
-    """A negation admits everything it doesn't name, and ``Null: false`` only
-    asserts the claim exists. Neither scopes the trust, so it is as broad as
-    one with no key at all, and must fail the default gate like it."""
+    """A negation admits everything it doesn't name, ``Null: false`` only
+    asserts the claim exists, and ``StringLike "*"`` matches every value. None
+    of them scopes the trust, so it is as broad as one with no key at all, and
+    must fail the default gate like it."""
     condition = {op: {key: value} for op in operators}
 
     exit_code, findings = run_ingress(iam, web_identity_trust(principal, condition))
@@ -747,6 +829,13 @@ def test_identifying_key_only_negated_or_null_false_counts_as_absent(
             id="negation-beside-positive",
         ),
         pytest.param(lambda k: {"ArnLike": {k: "y"}}, id="unrecognised-operator"),
+        pytest.param(
+            lambda k: {"StringLike": {k: "*"}, "StringEquals": {k: "y"}},
+            id="star-beside-positive",
+        ),
+        pytest.param(lambda k: {"StringLike": {k: "y*"}}, id="string-like-not-star"),
+        # StringEquals is literal: "*" matches only the value "*".
+        pytest.param(lambda k: {"StringEquals": {k: "*"}}, id="string-equals-star"),
     ],
 )
 def test_identifying_key_otherwise_present_is_not_evaluated(
@@ -779,6 +868,11 @@ GHE_SUB = f"{GHE_ISSUER}:sub"
             like("repo:*", key=GHE_SUB),
             ("MEDIUM", "github_enterprise", "NOT_EVALUATED", False),
             id="broad-sub-not-rated-critical",
+        ),
+        pytest.param(
+            like("*", key=GHE_SUB),
+            ("HIGH", "github_enterprise", "HIGH", True),
+            id="star-sub-counts-as-absent",
         ),
     ],
 )
