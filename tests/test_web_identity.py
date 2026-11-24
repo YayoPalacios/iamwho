@@ -485,6 +485,18 @@ def test_non_web_identity_findings_leave_subject_fields_unset(iam):
     assert finding["subject_evaluated"] is None
 
 
+def test_entry_role_trusting_only_github_reports_no_in_account_principal(iam):
+    """Spec #6 story 31: only the federated principal can assume, so ingress
+    must not report the role's own account or anyone in it. (The chain walk
+    still follows identity-policy AssumeRole grants into such a role; that is
+    #25.)"""
+    _, findings = run_ingress(iam, web_identity_trust(GITHUB, like("repo:my-org/*")))
+
+    assert [(f["principal"], f["principal_type"]) for f in findings] == [
+        (GITHUB, "FederatedOIDC")
+    ]
+
+
 def test_subject_evaluation_reads_only_the_trust_policy(iam):
     """Evaluation is offline: one get_role, nothing else."""
     run_ingress(iam, web_identity_trust(GITHUB, like([PINNED, "repo:my-org/*"])))
